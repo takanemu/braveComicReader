@@ -1,0 +1,35 @@
+{
+  "$schema": "https://tauri.app/v2/schema.json",
+  "productName": "Brave Comic Reader",
+  "version": "0.1.0",
+  "identifier": "com.brave.comicreader",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "mainBinaryName": "brave-comic-viewer-x86_64-unknown-linux-gnu",
+  "bundle": {
+    "active": true,
+    "targets": []
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:;",
+      "assetProtocol": {
+        "enable": false,
+        "scope": []
+      },
+      "capabilities": ["default"]
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Brave Comic Reader",
+        "width": 1200,
+        "height": 840
+      }
+    ]
+  }
+}
