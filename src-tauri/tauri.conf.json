@@ -1,7 +1,7 @@
 {
   "$schema": "https://tauri.app/v2/schema.json",
   "productName": "Brave Comic Reader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.brave.comicreader",
   "build": {
     "beforeBuildCommand": "npm run build",

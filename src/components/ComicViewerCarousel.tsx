@@ -11,6 +11,7 @@ type ComicViewerCarouselProps = {
   pageIndex: number
   pageStep: 1 | 2
   spreadMode: boolean
+  pageTransition: 'cut' | 'crossDissolve'
   pageNames: string[]
   imageUrl: string | null
   archivePath: string | null
@@ -19,11 +20,19 @@ type ComicViewerCarouselProps = {
   onPageChange: (nextIndex: number) => void
 }
 
+type DisplayedPage = {
+  pageIndex: number
+  imageUrl: string | null
+  spreadPage: { index: number; url: string } | null
+  spreadMode: boolean
+}
+
 const ComicViewerCarousel: FC<ComicViewerCarouselProps> = ({
   pageCount,
   pageIndex,
   pageStep,
   spreadMode,
+  pageTransition,
   pageNames,
   imageUrl,
   archivePath,
@@ -34,7 +43,40 @@ const ComicViewerCarousel: FC<ComicViewerCarouselProps> = ({
   const [api, setApi] = useState<EmblaCarouselType | null>(null)
   const [navigationVisible, setNavigationVisible] = useState(false)
   const navigationIdleTimerRef = useRef<number | null>(null)
+  const [displayedPage, setDisplayedPage] = useState<DisplayedPage>(() => ({
+    pageIndex,
+    imageUrl,
+    spreadPage,
+    spreadMode,
+  }))
   const renderRadius = 2
+  const isPageTransitioning =
+    displayedPage.pageIndex !== pageIndex ||
+    displayedPage.imageUrl !== imageUrl ||
+    displayedPage.spreadPage?.index !== spreadPage?.index ||
+    displayedPage.spreadPage?.url !== spreadPage?.url ||
+    displayedPage.spreadMode !== spreadMode
+
+  useEffect(() => {
+    if (pageTransition === 'cut') {
+      if (isPageTransitioning) {
+        setDisplayedPage({ pageIndex, imageUrl, spreadPage, spreadMode })
+      }
+      return
+    }
+
+    if (!isPageTransitioning) {
+      return
+    }
+
+    const transitionTimer = window.setTimeout(() => {
+      setDisplayedPage({ pageIndex, imageUrl, spreadPage, spreadMode })
+    }, 500)
+
+    return () => {
+      window.clearTimeout(transitionTimer)
+    }
+  }, [imageUrl, isPageTransitioning, pageIndex, pageTransition, spreadMode, spreadPage])
 
   const revealNavigation = () => {
     setNavigationVisible(true)
@@ -121,7 +163,41 @@ const ComicViewerCarousel: FC<ComicViewerCarouselProps> = ({
   const isPrevSpreadDisabled = !archivePath || pageIndex === 0
   const isNextSpreadDisabled = !archivePath || pageIndex >= pageCount - 1
   const spreadLayout = spreadMode || spreadPage !== null
-  const isUnpairedOddPage = spreadMode && spreadPage === null && pageIndex % 2 === 0
+  const shouldCrossDissolve = pageTransition === 'crossDissolve' && isPageTransitioning
+
+  const renderPageImages = (
+    renderedPageIndex: number,
+    renderedImageUrl: string,
+    renderedSpreadPage: DisplayedPage['spreadPage'],
+    renderedSpreadMode: boolean,
+  ) => {
+    const isSpreadLayout = renderedSpreadMode || renderedSpreadPage !== null
+    const isUnpaired = renderedSpreadMode && renderedSpreadPage === null && renderedPageIndex % 2 === 0
+
+    return (
+      <div className={`flex h-full w-full items-center ${isUnpaired ? 'justify-start' : 'justify-center'}`}>
+        {renderedSpreadPage && renderedSpreadPage.index < renderedPageIndex ? (
+          <img
+            src={renderedSpreadPage.url}
+            alt={pageNames[renderedSpreadPage.index] ?? 'Comic page'}
+            className="h-full w-auto max-w-[50%] flex-none object-contain"
+          />
+        ) : null}
+        <img
+          src={renderedImageUrl}
+          alt={pageNames[renderedPageIndex] ?? 'Comic page'}
+          className={isSpreadLayout ? 'h-full w-auto max-w-[50%] flex-none object-contain' : 'h-full w-full object-contain'}
+        />
+        {renderedSpreadPage && renderedSpreadPage.index > renderedPageIndex ? (
+          <img
+            src={renderedSpreadPage.url}
+            alt={pageNames[renderedSpreadPage.index] ?? 'Comic page'}
+            className="h-full w-auto max-w-[50%] flex-none object-contain"
+          />
+        ) : null}
+      </div>
+    )
+  }
 
   return (
     <div
@@ -142,29 +218,23 @@ const ComicViewerCarousel: FC<ComicViewerCarouselProps> = ({
             <CarouselItem key={renderedPageIndex} className="h-full min-h-0">
               <div className={`flex h-full min-h-0 items-center justify-center overflow-hidden rounded-xl border border-slate-800 bg-slate-950/60 ${spreadLayout ? 'p-0' : 'p-3'}`}>
                 {hasPage && renderedPageIndex === pageIndex ? (
-                  <div
-                    className={`flex h-full w-full items-center ${isUnpairedOddPage ? 'justify-start' : 'justify-center'}`}
-                    style={{ height: '100%', width: '100%' }}
-                  >
-                    {spreadPage && spreadPage.index < pageIndex ? (
-                      <img
-                        src={spreadPage.url}
-                        alt={pageNames[spreadPage.index] ?? 'Comic page'}
-                        className="h-full w-auto max-w-[50%] flex-none object-contain"
-                      />
+                  <div className="relative h-full w-full">
+                    {shouldCrossDissolve && displayedPage.imageUrl ? (
+                      <div
+                        aria-hidden="true"
+                        className="comic-page-layer comic-page-fade-out absolute inset-0"
+                      >
+                        {renderPageImages(
+                          displayedPage.pageIndex,
+                          displayedPage.imageUrl,
+                          displayedPage.spreadPage,
+                          displayedPage.spreadMode,
+                        )}
+                      </div>
                     ) : null}
-                    <img
-                      src={imageUrl}
-                      alt={pageNames[pageIndex] ?? 'Comic page'}
-                      className={spreadLayout ? 'h-full w-auto max-w-[50%] flex-none object-contain' : 'h-full w-full object-contain'}
-                    />
-                    {spreadPage && spreadPage.index > pageIndex ? (
-                      <img
-                        src={spreadPage.url}
-                        alt={pageNames[spreadPage.index] ?? 'Comic page'}
-                        className="h-full w-auto max-w-[50%] flex-none object-contain"
-                      />
-                    ) : null}
+                    <div className={`comic-page-layer relative ${shouldCrossDissolve ? 'comic-page-fade-in' : ''}`}>
+                      {renderPageImages(pageIndex, imageUrl, spreadPage, spreadMode)}
+                    </div>
                   </div>
                 ) : pageCount === 0 ? (
                   <p className="text-sm text-slate-500">Choose an archive to render its first page here.</p>

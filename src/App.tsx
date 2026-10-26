@@ -12,10 +12,12 @@ const MENU_ITEMS = [
 ] as const
 
 type CacheMode = 'nearby' | 'fullArchive'
+type PageTransition = 'cut' | 'crossDissolve'
 
 type AppSettings = {
   cacheMode: CacheMode
   spreadMode: boolean
+  pageTransition: PageTransition
 }
 
 type ArchiveInfo = {
@@ -153,6 +155,8 @@ const App: FC = () => {
   const cacheModeRef = useRef<CacheMode>('nearby')
   const [spreadMode, setSpreadMode] = useState(false)
   const [spreadModeDraft, setSpreadModeDraft] = useState(false)
+  const [pageTransition, setPageTransition] = useState<PageTransition>('crossDissolve')
+  const [pageTransitionDraft, setPageTransitionDraft] = useState<PageTransition>('crossDissolve')
   const pageStep = spreadMode ? 2 : 1
   const spreadModeRef = useRef(false)
   const fullArchivePrefetchPathRef = useRef<string | null>(null)
@@ -206,6 +210,7 @@ const App: FC = () => {
           cacheModeRef.current = settings.cacheMode
           setCacheMode(settings.cacheMode)
           setSpreadMode(settings.spreadMode)
+          setPageTransition(settings.pageTransition)
         }
       })
       .catch((error) => {
@@ -247,7 +252,7 @@ const App: FC = () => {
         window.clearTimeout(scrollIdleTimerRef.current)
       }
       if (imageUrl) {
-        URL.revokeObjectURL(imageUrl)
+        window.setTimeout(() => URL.revokeObjectURL(imageUrl), 550)
       }
     }
   }, [imageUrl])
@@ -260,7 +265,9 @@ const App: FC = () => {
     if (!spreadPage) {
       return
     }
-    return () => URL.revokeObjectURL(spreadPage.url)
+    return () => {
+      window.setTimeout(() => URL.revokeObjectURL(spreadPage.url), 550)
+    }
   }, [spreadPage])
 
   useEffect(() => {
@@ -989,10 +996,6 @@ const App: FC = () => {
 
       console.timeEnd("2. Uint8Array & Blob");
 
-      if (imageUrl) {
-        URL.revokeObjectURL(imageUrl)
-      }
-
       console.time("3. React State Update & Render");
       setImageUrl(nextUrl)
       if (spreadModeRef.current) {
@@ -1139,6 +1142,7 @@ const App: FC = () => {
     if (id === 'settings') {
       setCacheModeDraft(cacheMode)
       setSpreadModeDraft(spreadMode)
+      setPageTransitionDraft(pageTransition)
       setSettingsError('')
       setIsSettingsOpen(true)
       return
@@ -1158,10 +1162,17 @@ const App: FC = () => {
     setSettingsError('')
 
     try {
-      await invoke('save_settings', { settings: { cacheMode: cacheModeDraft, spreadMode: spreadModeDraft } satisfies AppSettings })
+      await invoke('save_settings', {
+        settings: {
+          cacheMode: cacheModeDraft,
+          spreadMode: spreadModeDraft,
+          pageTransition: pageTransitionDraft,
+        } satisfies AppSettings,
+      })
       cacheModeRef.current = cacheModeDraft
       setCacheMode(cacheModeDraft)
       setSpreadMode(spreadModeDraft)
+      setPageTransition(pageTransitionDraft)
       setIsSettingsOpen(false)
       if (cacheModeDraft === 'nearby') {
         fullArchivePrefetchGenerationRef.current += 1
@@ -1180,6 +1191,7 @@ const App: FC = () => {
   const discardSettingsChanges = () => {
     setCacheModeDraft(cacheMode)
     setSpreadModeDraft(spreadMode)
+    setPageTransitionDraft(pageTransition)
     setSettingsError('')
     setIsSettingsOpen(false)
   }
@@ -1358,6 +1370,7 @@ const App: FC = () => {
               pageIndex={pageIndex}
               pageStep={pageStep}
               spreadMode={spreadMode}
+              pageTransition={pageTransition}
               pageNames={pageNames}
               imageUrl={imageUrl}
               archivePath={archivePath}
@@ -1457,7 +1470,7 @@ const App: FC = () => {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 id="settings-title" className="text-base font-semibold text-slate-100">Settings</h2>
-                <p className="mt-1 text-sm text-slate-400">Choose how aggressively pages are cached.</p>
+                <p className="mt-1 text-sm text-slate-400">Choose page caching and display behavior.</p>
               </div>
               <button
                 type="button"
@@ -1530,6 +1543,38 @@ const App: FC = () => {
                 <span>
                   <span className="block text-sm font-medium text-slate-100">Spread pages</span>
                   <span className="mt-0.5 block text-xs leading-relaxed text-slate-400">Keep the current page and an adjacent page displayed together, including after navigation.</span>
+                </span>
+              </label>
+            </fieldset>
+
+            <fieldset className="mt-5 space-y-3">
+              <legend className="mb-2 text-sm font-medium text-slate-200">Page transition</legend>
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-700 p-3 hover:border-slate-500">
+                <input
+                  type="radio"
+                  name="page-transition"
+                  value="cut"
+                  checked={pageTransitionDraft === 'cut'}
+                  onChange={() => setPageTransitionDraft('cut')}
+                  className="radio radio-info mt-0.5"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-slate-100">Cut</span>
+                  <span className="mt-0.5 block text-xs leading-relaxed text-slate-400">Replace the current page directly without fading through a blank screen.</span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-700 p-3 hover:border-slate-500">
+                <input
+                  type="radio"
+                  name="page-transition"
+                  value="crossDissolve"
+                  checked={pageTransitionDraft === 'crossDissolve'}
+                  onChange={() => setPageTransitionDraft('crossDissolve')}
+                  className="radio radio-info mt-0.5"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-slate-100">Cross dissolve</span>
+                  <span className="mt-0.5 block text-xs leading-relaxed text-slate-400">Blend the current page into the next page over 500ms.</span>
                 </span>
               </label>
             </fieldset>
