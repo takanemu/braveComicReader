@@ -1,4 +1,5 @@
 mod archive;
+mod bookmarks;
 
 use archive::ArchiveError;
 use serde::{Deserialize, Serialize};
@@ -122,9 +123,15 @@ pub mod commands {
   use super::{AppError, AppSettings, ArchiveInfo, ArchivePageThumbnail, ArchivePageThumbnailBatch, ArchiveProgress, PagePayload};
   use crate::{app_elapsed_ms, extract_archive_thumbnails_to_memory, format_duration};
   use crate::archive::{get_archive_info as read_archive_info, get_archive_info_with_progress as read_archive_info_with_progress, prefetch_archive_page_range, preload_archive_cache, read_archive_page, read_archive_page_thumbnails_range};
+  use crate::bookmarks::{self, ArchiveIdentity, Bookmark};
   use std::fs;
   use tauri::{Emitter, Manager};
   use chrono::Local;
+
+  fn bookmark_database_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, AppError> {
+    let data_dir = app.path().app_data_dir().map_err(|error| AppError::Internal(error.to_string()))?;
+    Ok(data_dir.join("bookmarks.sqlite"))
+  }
 
   fn settings_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, AppError> {
     let config_dir = app.path().app_config_dir().map_err(|error| AppError::Internal(error.to_string()))?;
@@ -181,6 +188,60 @@ pub mod commands {
     let archive_path = std::path::Path::new(&path);
     let (page_count, page_names) = read_archive_info(archive_path)?;
     Ok(ArchiveInfo { page_count, page_names })
+  }
+
+  #[tauri::command]
+  pub async fn identify_archive(path: String, app: tauri::AppHandle) -> Result<ArchiveIdentity, AppError> {
+    if path.is_empty() {
+      return Err(AppError::InvalidArchivePath);
+    }
+
+    let database_path = bookmark_database_file(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+      bookmarks::identify_archive(&database_path, std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))?
+  }
+
+  #[tauri::command]
+  pub async fn create_bookmark(
+    path: String,
+    page_index: usize,
+    app: tauri::AppHandle,
+  ) -> Result<Bookmark, AppError> {
+    if path.is_empty() {
+      return Err(AppError::InvalidArchivePath);
+    }
+
+    let database_path = bookmark_database_file(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+      let archive_path = std::path::Path::new(&path);
+      let (_, page_names) = read_archive_info(archive_path)?;
+      let page_name = page_names.get(page_index).ok_or(AppError::PageIndexOutOfRange)?;
+      let archive = bookmarks::identify_archive(&database_path, archive_path)?;
+      bookmarks::add_bookmark(&database_path, &archive.id, page_index, page_name)
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.to_string()))?
+  }
+
+  #[tauri::command]
+  pub fn list_bookmarks(archive_id: String, app: tauri::AppHandle) -> Result<Vec<Bookmark>, AppError> {
+    if uuid::Uuid::parse_str(&archive_id).is_err() {
+      return Err(AppError::Internal("Invalid archive ID".into()));
+    }
+
+    bookmarks::list_bookmarks(&bookmark_database_file(&app)?, &archive_id)
+  }
+
+  #[tauri::command]
+  pub fn delete_bookmark(bookmark_id: String, app: tauri::AppHandle) -> Result<(), AppError> {
+    if uuid::Uuid::parse_str(&bookmark_id).is_err() {
+      return Err(AppError::Internal("Invalid bookmark ID".into()));
+    }
+
+    bookmarks::delete_bookmark(&bookmark_database_file(&app)?, &bookmark_id)
   }
 
   #[tauri::command]
@@ -519,6 +580,10 @@ pub fn run() {
       commands::load_settings,
       commands::save_settings,
       commands::get_archive_info,
+      commands::identify_archive,
+      commands::create_bookmark,
+      commands::list_bookmarks,
+      commands::delete_bookmark,
       commands::get_page,
       commands::preload_archive,
       commands::preload_archive_pages,

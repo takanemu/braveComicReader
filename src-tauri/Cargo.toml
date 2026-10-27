@@ -20,6 +20,9 @@ name = "brave_comic_reader"
   serde = { version = "1.0", features = ["derive"] }
   serde_json = "1.0"
   thiserror = "1.0"
+  blake3 = "1"
+  rusqlite = { version = "0.32", features = ["bundled"] }
+  uuid = { version = "1", features = ["v4"] }
 
   # Common virtual filesystem for archive formats
   lazy-archive = { git = "https://github.com/takanemu/archivefs", rev = "2bacabcd233bbeacae2dbf32efcff7f9a23d8050" }
@@ -32,10 +35,10 @@ name = "brave_comic_reader"
 [dev-dependencies]
   zip = "2"
   tar = "0.4"
+  tempfile = "3"
 [build-dependencies]
   tauri = { version = "2.0.0-rc.1", features = [] }
   tauri-build = { version = "2", features = [] }
 
 [features]
   default = []
-

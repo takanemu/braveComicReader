@@ -7,6 +7,7 @@ import ComicViewerCarousel from './components/ComicViewerCarousel'
 
 const MENU_ITEMS = [
   { id: 'archive', label: 'Open archive' },
+  { id: 'bookmarks', label: 'Show bookmarks' },
   { id: 'jump', label: 'Jump to page' },
   { id: 'settings', label: 'Settings' },
 ] as const
@@ -23,6 +24,14 @@ type AppSettings = {
 type ArchiveInfo = {
   page_count: number
   page_names: string[]
+}
+
+type Bookmark = {
+  id: string
+  archive_id: string
+  page_index: number
+  page_name: string
+  created_at: string
 }
 
 type PagePayload = {
@@ -42,6 +51,7 @@ type ThumbnailItemProps = {
   pageThumbnail: string
   pageLoaded: boolean
   isActive: boolean
+  isBookmarked: boolean
   onSelect: (index: number) => void
 }
 
@@ -56,7 +66,7 @@ const getSpreadPartnerIndex = (pageIndex: number, pageCount: number): number | n
   return partnerIndex >= 0 && partnerIndex < pageCount ? partnerIndex : null
 }
 
-const ThumbnailItem: FC<ThumbnailItemProps> = memo(({ index, name, pageThumbnail, pageLoaded, isActive, onSelect }) => {
+const ThumbnailItem: FC<ThumbnailItemProps> = memo(({ index, name, pageThumbnail, pageLoaded, isActive, isBookmarked, onSelect }) => {
   return (
     <button
       type="button"
@@ -65,6 +75,17 @@ const ThumbnailItem: FC<ThumbnailItemProps> = memo(({ index, name, pageThumbnail
       aria-label={`Load page ${index + 1}`}
     >
       <div className="relative overflow-hidden rounded-t-xl bg-slate-900" style={{ width: `${THUMBNAIL_WIDTH}px`, height: `${THUMBNAIL_HEIGHT}px` }}>
+        {isBookmarked ? (
+          <svg
+            aria-label="Bookmarked"
+            role="img"
+            viewBox="0 0 24 24"
+            className="absolute left-1.5 top-1.5 z-10 h-5 w-5 text-amber-400 drop-shadow-md"
+            fill="currentColor"
+          >
+            <path d="M6 3.75A1.75 1.75 0 0 1 7.75 2h8.5A1.75 1.75 0 0 1 18 3.75V22l-6-4-6 4V3.75Z" />
+          </svg>
+        ) : null}
         {pageThumbnail ? (
           <img
             src={pageThumbnail}
@@ -143,6 +164,12 @@ const buildContinuousRanges = (indices: number[]): IndexRange[] => {
 
 const App: FC = () => {
   const [archivePath, setArchivePath] = useState<string | null>(null)
+  const [archiveId, setArchiveId] = useState<string | null>(null)
+  const archiveIdRef = useRef<string | null>(null)
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
+  const [isBookmarksOpen, setIsBookmarksOpen] = useState(false)
+  const [isTogglingBookmark, setIsTogglingBookmark] = useState(false)
+  const [bookmarkError, setBookmarkError] = useState('')
   const [pageNames, setPageNames] = useState<string[]>([])
   const [pageThumbnails, setPageThumbnails] = useState<string[]>([])
   const [pageLoaded, setPageLoaded] = useState<boolean[]>([])
@@ -385,6 +412,11 @@ const App: FC = () => {
     }
     return `${String(pageIndex + 1).padStart(3, '0')}/${String(pageCount).padStart(3, '0')}`
   }, [pageCount, pageIndex])
+  const isCurrentPageBookmarked = bookmarks.some((bookmark) => bookmark.page_index === pageIndex)
+  const bookmarkedPageIndices = useMemo(
+    () => new Set(bookmarks.map((bookmark) => bookmark.page_index)),
+    [bookmarks],
+  )
 
   const loadArchive = async (path: string) => {
     setIsLoading(true)
@@ -394,6 +426,10 @@ const App: FC = () => {
 
     try {
       setArchivePath(path)
+      setArchiveId(null)
+      archiveIdRef.current = null
+      setBookmarks([])
+      setBookmarkError('')
       archivePathRef.current = path
       setPageCount(0)
       pageCountRef.current = 0
@@ -433,6 +469,20 @@ const App: FC = () => {
         cachedPagesRef.current = Array(info.page_count).fill(false)
         setCachedPages(cachedPagesRef.current)
         setIsArchiveReady(true)
+        try {
+          const identity = await invoke<{ id: string }>('identify_archive', { path })
+          if (archivePathRef.current === path) {
+            archiveIdRef.current = identity.id
+            setArchiveId(identity.id)
+            const savedBookmarks = await invoke<Bookmark[]>('list_bookmarks', { archiveId: identity.id })
+            if (archiveIdRef.current === identity.id) {
+              setBookmarks(savedBookmarks)
+            }
+          }
+        } catch (error) {
+          setBookmarkError('Unable to load bookmarks for this archive.')
+          console.error('Failed to identify archive or load bookmarks', { path, error })
+        }
         //setProgress({ loaded: info.page_count, total: info.page_count })
 
         if (info.page_count > 0) {
@@ -1139,6 +1189,21 @@ const App: FC = () => {
       return
     }
 
+    if (id === 'bookmarks') {
+      setIsBookmarksOpen(true)
+      setBookmarkError('')
+      if (archiveId) {
+        try {
+          const savedBookmarks = await invoke<Bookmark[]>('list_bookmarks', { archiveId })
+          setBookmarks(savedBookmarks)
+        } catch (error) {
+          setBookmarkError('Unable to load bookmarks for this archive.')
+          console.error('Failed to list bookmarks', { archiveId, error })
+        }
+      }
+      return
+    }
+
     if (id === 'settings') {
       setCacheModeDraft(cacheMode)
       setSpreadModeDraft(spreadMode)
@@ -1155,6 +1220,45 @@ const App: FC = () => {
     setPageJumpInput(String(pageIndex + 1))
     setPageJumpError('')
     setIsPageJumpOpen(true)
+  }
+
+  const handleToggleCurrentBookmark = async () => {
+    if (!archivePath || !archiveId || pageCount === 0 || isTogglingBookmark) {
+      return
+    }
+
+    const targetPageIndex = pageIndex
+    const targetArchiveId = archiveId
+    const existingBookmark = bookmarks.find((bookmark) => bookmark.page_index === targetPageIndex)
+    setIsTogglingBookmark(true)
+    setBookmarkError('')
+
+    try {
+      if (existingBookmark) {
+        await invoke('delete_bookmark', { bookmarkId: existingBookmark.id })
+        if (archiveIdRef.current === targetArchiveId) {
+          setBookmarks((current) => current.filter((bookmark) => bookmark.id !== existingBookmark.id))
+        }
+      } else {
+        const bookmark = await invoke<Bookmark>('create_bookmark', {
+          path: archivePath,
+          pageIndex: targetPageIndex,
+        })
+        if (archiveIdRef.current === targetArchiveId) {
+          setBookmarks((current) => [...current.filter((item) => item.page_index !== targetPageIndex), bookmark]
+            .sort((left, right) => left.page_index - right.page_index))
+        }
+      }
+    } catch (error) {
+      setBookmarkError(existingBookmark ? 'Unable to remove this bookmark.' : 'Unable to add a bookmark.')
+      console.error('Failed to toggle bookmark', {
+        archivePath,
+        pageIndex: targetPageIndex,
+        error,
+      })
+    } finally {
+      setIsTogglingBookmark(false)
+    }
   }
 
   const handleSaveSettings = async () => {
@@ -1250,7 +1354,10 @@ const App: FC = () => {
                         <button
                           type="button"
                           onClick={() => void handleMenuSelect(item.id)}
-                          disabled={item.id === 'jump' && (!archivePath || pageCount === 0)}
+                          disabled={
+                            (item.id === 'jump' && (!archivePath || pageCount === 0)) ||
+                            (item.id === 'bookmarks' && !archiveId)
+                          }
                           className="text-sm text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           {item.label}
@@ -1270,8 +1377,36 @@ const App: FC = () => {
                 </p>
               </div>
             </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleToggleCurrentBookmark()}
+                disabled={!archivePath || pageCount === 0 || !archiveId || isTogglingBookmark}
+                aria-label={isCurrentPageBookmarked ? 'Remove bookmark from current page' : 'Bookmark current page'}
+                aria-pressed={isCurrentPageBookmarked}
+                title={isCurrentPageBookmarked ? 'Remove bookmark' : 'Bookmark this page'}
+                className={`btn btn-square btn-ghost border border-slate-700 bg-slate-900/80 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isCurrentPageBookmarked ? 'text-amber-400' : 'text-slate-400'
+                }`}
+              >
+                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor" aria-hidden="true">
+                  <path d="M6 3.75A1.75 1.75 0 0 1 7.75 2h8.5A1.75 1.75 0 0 1 18 3.75V22l-6-4-6 4V3.75Z" />
+                </svg>
+              </button>
+            </div>
           </div>
         </header>
+        {bookmarkError && !isBookmarksOpen ? (
+          <div
+            role="alert"
+            className="fixed right-4 top-20 z-50 flex max-w-sm items-center gap-3 rounded-lg border border-rose-800 bg-slate-950 px-4 py-3 text-sm text-rose-300 shadow-xl"
+          >
+            <span>{bookmarkError}</span>
+            <button type="button" onClick={() => setBookmarkError('')} aria-label="Dismiss bookmark error" className="text-lg leading-none text-slate-400 hover:text-white">
+              &times;
+            </button>
+          </div>
+        ) : null}
 
         <div className="flex min-h-[calc(100vh-16px)] max-h-[calc(100vh-16px)] w-full gap-4">
           <aside className="flex w-[124px] shrink-0 flex-col rounded-2xl border border-slate-800 bg-slate-900/80 p-2.5 shadow-2xl shadow-black/20">
@@ -1351,6 +1486,7 @@ const App: FC = () => {
                             pageThumbnail={pageThumbnails[index] ?? ''}
                             pageLoaded={pageLoaded[index] ?? false}
                             isActive={pageIndex === index}
+                            isBookmarked={bookmarkedPageIndices.has(index)}
                             onSelect={(nextIndex) => {
                               navigateToPage(archivePath ?? '', nextIndex)
                             }}
@@ -1444,6 +1580,97 @@ const App: FC = () => {
               </button>
             </div>
           </form>
+        </div>
+      ) : null}
+
+      {isBookmarksOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setIsBookmarksOpen(false)
+              setBookmarkError('')
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="bookmarks-title"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                setIsBookmarksOpen(false)
+                setBookmarkError('')
+              }
+            }}
+            className="w-full max-w-lg rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="bookmarks-title" className="text-base font-semibold text-slate-100">Bookmarks</h2>
+                <p className="mt-1 truncate text-sm text-slate-400">{archivePath?.split(/[\\/]/).pop()}</p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close bookmarks"
+                onClick={() => {
+                  setIsBookmarksOpen(false)
+                  setBookmarkError('')
+                }}
+                className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-xl leading-none text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+              >
+                &times;
+              </button>
+            </div>
+            {bookmarkError ? <p role="alert" className="mt-3 text-sm text-rose-400">{bookmarkError}</p> : null}
+            {bookmarks.length === 0 ? (
+              <p className="mt-5 text-sm text-slate-400">No bookmarks in this archive.</p>
+            ) : (
+              <ul className="mt-4 max-h-[60vh] space-y-2 overflow-y-auto">
+                {bookmarks.map((bookmark) => (
+                  <li key={bookmark.id} className="flex items-center gap-2 rounded-lg border border-slate-700 p-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const matchingPage = pageNames.indexOf(bookmark.page_name)
+                        const targetIndex = matchingPage >= 0 ? matchingPage : bookmark.page_index
+                        if (archivePath && targetIndex >= 0 && targetIndex < pageCount) {
+                          setIsBookmarksOpen(false)
+                          navigateToPage(archivePath, targetIndex)
+                        } else {
+                          setBookmarkError('The bookmarked page is no longer available.')
+                        }
+                      }}
+                      className="min-w-0 flex-1 truncate rounded px-2 py-1 text-left text-sm text-slate-100 hover:bg-slate-800"
+                    >
+                      <span className="mr-2 text-cyan-400">Page {bookmark.page_index + 1}</span>
+                      <span className="text-slate-300">{bookmark.page_name}</span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete bookmark for page ${bookmark.page_index + 1}`}
+                      onClick={() => {
+                        void invoke('delete_bookmark', { bookmarkId: bookmark.id })
+                          .then(() => setBookmarks((existing) => existing.filter((item) => item.id !== bookmark.id)))
+                          .catch((error: unknown) => {
+                            setBookmarkError('Unable to delete this bookmark.')
+                            console.error('Failed to delete bookmark', { bookmarkId: bookmark.id, error })
+                          })
+                      }}
+                      className="inline-flex size-8 shrink-0 items-center justify-center rounded text-rose-300 hover:bg-rose-950/60"
+                    >
+                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M4 7h16" />
+                        <path d="M10 11v6M14 11v6" />
+                        <path d="m5 7 1 14h12l1-14" />
+                        <path d="M9 7V4h6v3" />
+                      </svg>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
         </div>
       ) : null}
 

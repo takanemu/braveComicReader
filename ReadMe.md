@@ -1,8 +1,13 @@
 # デバック起動
-npm run tauri dev
+npm run tauri:dev
+
+# ブックマーク
+アーカイブを開いた状態でメニューから「Bookmark this page」を選ぶと、現在のページをしおりとして保存できます。「Show bookmarks」から一覧表示、該当ページへの移動、削除ができます。
+
+しおりはローカルの SQLite データベースに保存されます。アーカイブの識別には、ファイルサイズと先頭・末尾各 4 KiB から計算したハッシュ値を使用します。そのため、サイズを変えずにサンプル範囲外だけが変更されたファイルは、同じアーカイブと判定される場合があります。
 
 # リリースビルド
-npm run tauri build
+npm run tauri:build
 
 # アイコン生成
 npx tauri icon app-icon.png
