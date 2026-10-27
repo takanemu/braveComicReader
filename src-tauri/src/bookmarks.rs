@@ -22,6 +22,12 @@ pub struct Bookmark {
     pub created_at: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct LastReadPage {
+    pub page_index: usize,
+    pub page_name: String,
+}
+
 pub fn fingerprint_archive(path: &Path) -> Result<String, AppError> {
     let mut file = File::open(path).map_err(|error| AppError::Internal(error.to_string()))?;
     let file_size = file
@@ -127,6 +133,45 @@ pub fn list_bookmarks(database_path: &Path, archive_id: &str) -> Result<Vec<Book
     rows.collect::<Result<Vec<_>, _>>().map_err(database_error)
 }
 
+pub fn save_last_read_page(
+    database_path: &Path,
+    archive_id: &str,
+    page_index: usize,
+    page_name: &str,
+) -> Result<(), AppError> {
+    let connection = open_database(database_path)?;
+    let updated = connection
+        .execute(
+            "UPDATE archives SET last_page_index = ?1, last_page_name = ?2 WHERE id = ?3",
+            params![page_index, page_name, archive_id],
+        )
+        .map_err(database_error)?;
+    if updated == 0 {
+        return Err(AppError::Internal("Archive not found".into()));
+    }
+    Ok(())
+}
+
+pub fn get_last_read_page(
+    database_path: &Path,
+    archive_id: &str,
+) -> Result<Option<LastReadPage>, AppError> {
+    let connection = open_database(database_path)?;
+    connection
+        .query_row(
+            "SELECT last_page_index, last_page_name FROM archives WHERE id = ?1 AND last_page_index IS NOT NULL",
+            params![archive_id],
+            |row| {
+                Ok(LastReadPage {
+                    page_index: row.get(0)?,
+                    page_name: row.get(1)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(database_error)
+}
+
 pub fn delete_bookmark(database_path: &Path, bookmark_id: &str) -> Result<(), AppError> {
     let connection = open_database(database_path)?;
     let deleted = connection
@@ -168,7 +213,9 @@ fn open_database(path: &Path) -> Result<Connection, AppError> {
        CREATE TABLE IF NOT EXISTS archives (
          id TEXT PRIMARY KEY NOT NULL,
          fingerprint TEXT NOT NULL UNIQUE,
-         last_seen_path TEXT NOT NULL
+         last_seen_path TEXT NOT NULL,
+         last_page_index INTEGER CHECK (last_page_index >= 0),
+         last_page_name TEXT
        );
        CREATE TABLE IF NOT EXISTS bookmarks (
          id TEXT PRIMARY KEY NOT NULL,
@@ -182,6 +229,25 @@ fn open_database(path: &Path) -> Result<Connection, AppError> {
          ON bookmarks (archive_id, page_index);",
         )
         .map_err(database_error)?;
+    let mut statement = connection
+        .prepare("PRAGMA table_info(archives)")
+        .map_err(database_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(database_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(database_error)?;
+    drop(statement);
+    if !columns.iter().any(|column| column == "last_page_index") {
+        connection
+            .execute("ALTER TABLE archives ADD COLUMN last_page_index INTEGER CHECK (last_page_index >= 0)", [])
+            .map_err(database_error)?;
+    }
+    if !columns.iter().any(|column| column == "last_page_name") {
+        connection
+            .execute("ALTER TABLE archives ADD COLUMN last_page_name TEXT", [])
+            .map_err(database_error)?;
+    }
     Ok(connection)
 }
 
@@ -192,7 +258,8 @@ fn database_error(error: rusqlite::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_bookmark, delete_bookmark, fingerprint_archive, identify_archive, list_bookmarks,
+        add_bookmark, delete_bookmark, fingerprint_archive, get_last_read_page, identify_archive,
+        list_bookmarks, save_last_read_page,
     };
     use std::fs;
     use std::io::Write;
@@ -269,6 +336,16 @@ mod tests {
         let moved_identity = identify_archive(&database, &renamed_archive_path).unwrap();
         assert_eq!(first_identity.id, moved_identity.id);
         assert!(uuid::Uuid::parse_str(&first_identity.id).is_ok());
+
+        assert!(get_last_read_page(&database, &first_identity.id)
+            .unwrap()
+            .is_none());
+        save_last_read_page(&database, &first_identity.id, 4, "page-5.png").unwrap();
+        let last_read_page = get_last_read_page(&database, &first_identity.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(last_read_page.page_index, 4);
+        assert_eq!(last_read_page.page_name, "page-5.png");
 
         let bookmark = add_bookmark(&database, &first_identity.id, 4, "page-5.png").unwrap();
         assert_eq!(bookmark.page_index, 4);

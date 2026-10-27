@@ -123,7 +123,7 @@ pub mod commands {
   use super::{AppError, AppSettings, ArchiveInfo, ArchivePageThumbnail, ArchivePageThumbnailBatch, ArchiveProgress, PagePayload};
   use crate::{app_elapsed_ms, extract_archive_thumbnails_to_memory, format_duration};
   use crate::archive::{get_archive_info as read_archive_info, get_archive_info_with_progress as read_archive_info_with_progress, prefetch_archive_page_range, preload_archive_cache, read_archive_page, read_archive_page_thumbnails_range};
-  use crate::bookmarks::{self, ArchiveIdentity, Bookmark};
+  use crate::bookmarks::{self, ArchiveIdentity, Bookmark, LastReadPage};
   use std::fs;
   use tauri::{Emitter, Manager};
   use chrono::Local;
@@ -233,6 +233,40 @@ pub mod commands {
     }
 
     bookmarks::list_bookmarks(&bookmark_database_file(&app)?, &archive_id)
+  }
+
+  #[tauri::command]
+  pub fn get_last_read_page(
+    archive_id: String,
+    app: tauri::AppHandle,
+  ) -> Result<Option<LastReadPage>, AppError> {
+    if uuid::Uuid::parse_str(&archive_id).is_err() {
+      return Err(AppError::Internal("Invalid archive ID".into()));
+    }
+
+    bookmarks::get_last_read_page(&bookmark_database_file(&app)?, &archive_id)
+  }
+
+  #[tauri::command]
+  pub fn save_last_read_page(
+    archive_id: String,
+    page_index: usize,
+    page_name: String,
+    app: tauri::AppHandle,
+  ) -> Result<(), AppError> {
+    if uuid::Uuid::parse_str(&archive_id).is_err() {
+      return Err(AppError::Internal("Invalid archive ID".into()));
+    }
+    if page_name.is_empty() {
+      return Err(AppError::Internal("Invalid page name".into()));
+    }
+
+    bookmarks::save_last_read_page(
+      &bookmark_database_file(&app)?,
+      &archive_id,
+      page_index,
+      &page_name,
+    )
   }
 
   #[tauri::command]
@@ -583,6 +617,8 @@ pub fn run() {
       commands::identify_archive,
       commands::create_bookmark,
       commands::list_bookmarks,
+      commands::get_last_read_page,
+      commands::save_last_read_page,
       commands::delete_bookmark,
       commands::get_page,
       commands::preload_archive,

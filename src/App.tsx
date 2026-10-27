@@ -34,6 +34,11 @@ type Bookmark = {
   created_at: string
 }
 
+type LastReadPage = {
+  page_index: number
+  page_name: string
+}
+
 type PagePayload = {
   name: string
   data: number[]
@@ -469,26 +474,41 @@ const App: FC = () => {
         cachedPagesRef.current = Array(info.page_count).fill(false)
         setCachedPages(cachedPagesRef.current)
         setIsArchiveReady(true)
+        let initialPageIndex = 0
         try {
           const identity = await invoke<{ id: string }>('identify_archive', { path })
           if (archivePathRef.current === path) {
             archiveIdRef.current = identity.id
             setArchiveId(identity.id)
-            const savedBookmarks = await invoke<Bookmark[]>('list_bookmarks', { archiveId: identity.id })
+            const [savedBookmarks, lastReadPage] = await Promise.all([
+              invoke<Bookmark[]>('list_bookmarks', { archiveId: identity.id }),
+              invoke<LastReadPage | null>('get_last_read_page', { archiveId: identity.id }),
+            ])
             if (archiveIdRef.current === identity.id) {
               setBookmarks(savedBookmarks)
+              if (lastReadPage) {
+                const pageByName = info.page_names.indexOf(lastReadPage.page_name)
+                initialPageIndex = pageByName >= 0
+                  ? pageByName
+                  : lastReadPage.page_index < info.page_count
+                    ? lastReadPage.page_index
+                    : 0
+              }
             }
           }
         } catch (error) {
-          setBookmarkError('Unable to load bookmarks for this archive.')
-          console.error('Failed to identify archive or load bookmarks', { path, error })
+          if (archivePathRef.current === path) {
+            setBookmarkError('Unable to load saved archive data.')
+          }
+          console.error('Failed to identify archive or load saved data', { path, error })
         }
         //setProgress({ loaded: info.page_count, total: info.page_count })
 
         if (info.page_count > 0) {
-          // Start page 0 immediately after the archive scan completes.
-          if (pageIndexRef.current === 0 && archivePathRef.current === path && !imageUrlRef.current) {
-            void loadPage(path, 0)
+          if (archivePathRef.current === path) {
+            pageIndexRef.current = initialPageIndex
+            setPageIndex(initialPageIndex)
+            void loadPage(path, initialPageIndex)
           }
         } else {
           //setStatus('The archive did not contain readable image pages.')
@@ -1063,6 +1083,20 @@ const App: FC = () => {
       });
       setPageIndex(nextIndex)
       pageIndexRef.current = nextIndex
+      const currentArchiveId = archiveIdRef.current
+      if (currentArchiveId && archivePathRef.current === path) {
+        void invoke('save_last_read_page', {
+          archiveId: currentArchiveId,
+          pageIndex: nextIndex,
+          pageName: payload.name,
+        }).catch((error: unknown) => {
+          console.error('Failed to save last read page', {
+            archiveId: currentArchiveId,
+            pageIndex: nextIndex,
+            error,
+          })
+        })
+      }
       //setStatus(payload.name)
     } catch (error) {
       console.error('Failed to load page', { path, pageIndex: nextIndex, error })
