@@ -6,9 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
-    "tauri:release": "tauri build --no-bundle",
+    "download:archivefs": "sh scripts/download-archivefs.sh",
+    "tauri:dev": "npm run download:archivefs && tauri dev",
+    "tauri:build": "npm run download:archivefs && tauri build",
+    "tauri:release": "npm run download:archivefs && tauri build --no-bundle",
     "lint": "eslint . --ext .ts,.tsx"
   },
   "dependencies": {

@@ -9,6 +9,9 @@ npm run tauri:dev
 # リリースビルド
 npm run tauri:build
 
+# archivefsバイナリの取得
+npm run download:archivefs
+
 # アイコン生成
 npx tauri icon app-icon.png
 

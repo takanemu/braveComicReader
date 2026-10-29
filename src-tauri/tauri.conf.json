@@ -12,7 +12,8 @@
   "mainBinaryName": "brave-comic-viewer-x86_64-unknown-linux-gnu",
   "bundle": {
     "active": true,
-    "targets": []
+    "targets": [],
+    "externalBin": ["binaries/archivefs-bench"]
   },
   "app": {
     "security": {
