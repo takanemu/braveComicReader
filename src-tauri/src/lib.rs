@@ -1,13 +1,13 @@
 mod archive;
 mod bookmarks;
+mod pdf;
 
 use archive::ArchiveError;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Instant;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use thiserror::Error;
 //use chrono::Local;
 
@@ -47,7 +47,11 @@ pub struct AppSettings {
 
 impl Default for AppSettings {
   fn default() -> Self {
-    Self { cache_mode: CacheMode::Nearby, spread_mode: false, page_transition: PageTransition::default() }
+    Self {
+      cache_mode: CacheMode::Nearby,
+      spread_mode: false,
+      page_transition: PageTransition::default(),
+    }
   }
 }
 
@@ -121,12 +125,15 @@ fn format_duration(duration: std::time::Duration) -> String {
 
 pub mod commands {
   use super::{AppError, AppSettings, ArchiveInfo, ArchivePageThumbnail, ArchivePageThumbnailBatch, ArchiveProgress, PagePayload};
-  use crate::{app_elapsed_ms, extract_archive_thumbnails_to_memory, format_duration};
-  use crate::archive::{get_archive_info as read_archive_info, get_archive_info_with_progress as read_archive_info_with_progress, prefetch_archive_page_range, preload_archive_cache, read_archive_page, read_archive_page_thumbnails_range};
+  use crate::archive::{
+    get_archive_info as read_archive_info, get_archive_info_with_progress as read_archive_info_with_progress, prefetch_archive_page_range_at_resolution, preload_archive_cache,
+    read_archive_page_thumbnails_range,
+  };
   use crate::bookmarks::{self, ArchiveIdentity, Bookmark, LastReadPage};
+  use crate::{app_elapsed_ms, extract_archive_thumbnails_to_memory, format_duration};
+  use chrono::Local;
   use std::fs;
   use tauri::{Emitter, Manager};
-  use chrono::Local;
 
   fn bookmark_database_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, AppError> {
     let data_dir = app.path().app_data_dir().map_err(|error| AppError::Internal(error.to_string()))?;
@@ -170,10 +177,7 @@ pub mod commands {
 
   #[tauri::command]
   pub fn get_startup_archive_path() -> Result<Option<String>, AppError> {
-    std::env::args_os()
-      .nth(1)
-      .map(|path| path.into_string().map_err(|_| AppError::InvalidArchivePath))
-      .transpose()
+    std::env::args_os().nth(1).map(|path| path.into_string().map_err(|_| AppError::InvalidArchivePath)).transpose()
   }
 
   #[tauri::command]
@@ -181,7 +185,7 @@ pub mod commands {
   pub fn get_archive_info(path: String) -> Result<ArchiveInfo, AppError> {
     // 空文字パスは不正入力として早期にエラーを返します。
     if path.is_empty() {
-      return Err(AppError::InvalidArchivePath)
+      return Err(AppError::InvalidArchivePath);
     }
 
     // 実際の読み取り処理は archive モジュールに委譲します。
@@ -197,19 +201,13 @@ pub mod commands {
     }
 
     let database_path = bookmark_database_file(&app)?;
-    tauri::async_runtime::spawn_blocking(move || {
-      bookmarks::identify_archive(&database_path, std::path::Path::new(&path))
-    })
-    .await
-    .map_err(|error| AppError::Internal(error.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || bookmarks::identify_archive(&database_path, std::path::Path::new(&path)))
+      .await
+      .map_err(|error| AppError::Internal(error.to_string()))?
   }
 
   #[tauri::command]
-  pub async fn create_bookmark(
-    path: String,
-    page_index: usize,
-    app: tauri::AppHandle,
-  ) -> Result<Bookmark, AppError> {
+  pub async fn create_bookmark(path: String, page_index: usize, app: tauri::AppHandle) -> Result<Bookmark, AppError> {
     if path.is_empty() {
       return Err(AppError::InvalidArchivePath);
     }
@@ -236,10 +234,7 @@ pub mod commands {
   }
 
   #[tauri::command]
-  pub fn get_last_read_page(
-    archive_id: String,
-    app: tauri::AppHandle,
-  ) -> Result<Option<LastReadPage>, AppError> {
+  pub fn get_last_read_page(archive_id: String, app: tauri::AppHandle) -> Result<Option<LastReadPage>, AppError> {
     if uuid::Uuid::parse_str(&archive_id).is_err() {
       return Err(AppError::Internal("Invalid archive ID".into()));
     }
@@ -248,12 +243,7 @@ pub mod commands {
   }
 
   #[tauri::command]
-  pub fn save_last_read_page(
-    archive_id: String,
-    page_index: usize,
-    page_name: String,
-    app: tauri::AppHandle,
-  ) -> Result<(), AppError> {
+  pub fn save_last_read_page(archive_id: String, page_index: usize, page_name: String, app: tauri::AppHandle) -> Result<(), AppError> {
     if uuid::Uuid::parse_str(&archive_id).is_err() {
       return Err(AppError::Internal("Invalid archive ID".into()));
     }
@@ -261,12 +251,7 @@ pub mod commands {
       return Err(AppError::Internal("Invalid page name".into()));
     }
 
-    bookmarks::save_last_read_page(
-      &bookmark_database_file(&app)?,
-      &archive_id,
-      page_index,
-      &page_name,
-    )
+    bookmarks::save_last_read_page(&bookmark_database_file(&app)?, &archive_id, page_index, &page_name)
   }
 
   #[tauri::command]
@@ -280,20 +265,25 @@ pub mod commands {
 
   #[tauri::command]
   /// 指定ページの画像データを取得します。
-  pub async fn get_page(path: String, page_index: usize) -> Result<PagePayload, AppError> {
+  pub async fn get_page(path: String, page_index: usize, max_width: u32, max_height: u32) -> Result<PagePayload, AppError> {
     // 入力値チェック: パスが空なら処理を続けません。
     if path.is_empty() {
-      return Err(AppError::InvalidArchivePath)
+      return Err(AppError::InvalidArchivePath);
     }
 
     tauri::async_runtime::spawn_blocking(move || {
       let archive_path = std::path::Path::new(&path);
       println!("[{}] [archive] get_page start page_index={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), page_index);
-      let page = read_archive_page(archive_path, page_index);
+      let page = crate::archive::read_archive_page_at_resolution(archive_path, page_index, max_width, max_height);
 
       match &page {
         Ok(page) => {
-          println!("[{}] [archive] get_page completed page_index={} name={} cached_via_read_archive_page", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), page_index, page.name);
+          println!(
+            "[{}] [archive] get_page completed page_index={} name={} cached_via_read_archive_page",
+            Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+            page_index,
+            page.name
+          );
         }
         Err(err) => {
           eprintln!("[{}] [archive] get_page failed page_index={} err={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), page_index, err);
@@ -316,7 +306,7 @@ pub mod commands {
   pub async fn preload_archive(path: String, app: tauri::AppHandle) -> Result<ArchiveInfo, AppError> {
     // 不正な入力を先に弾いて、以降の処理を安全にします。
     if path.is_empty() {
-      return Err(AppError::InvalidArchivePath)
+      return Err(AppError::InvalidArchivePath);
     }
 
     tauri::async_runtime::spawn_blocking(move || -> Result<ArchiveInfo, AppError> {
@@ -330,7 +320,13 @@ pub mod commands {
       let (page_count, page_names) = read_archive_info_with_progress(archive_path, Some(&progress_callback))?;
       println!("[{}] [archive] preload_archive scan_complete pages={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), page_count);
       // 最後に 100% 相当の進捗を送って完了を明示します。
-      let _ = app.emit("archive-progress", ArchiveProgress { loaded: page_count, total: page_count.max(1) });
+      let _ = app.emit(
+        "archive-progress",
+        ArchiveProgress {
+          loaded: page_count,
+          total: page_count.max(1),
+        },
+      );
       Ok(ArchiveInfo { page_count, page_names })
     })
     .await
@@ -341,10 +337,16 @@ pub mod commands {
   /// ページキャッシュ作成をバックグラウンドで開始し、進捗とサムネイルを逐次通知します。
   pub fn preload_archive_pages(path: String, page_count: usize, max_dimension: u32, app: tauri::AppHandle) -> Result<(), AppError> {
     if path.is_empty() {
-      return Err(AppError::InvalidArchivePath)
+      return Err(AppError::InvalidArchivePath);
     }
 
-    println!("[{}ms] [archive] preload_archive_pages start path=\"{}\" page_count={} max_dimension={}", app_elapsed_ms(), path, page_count, max_dimension);
+    println!(
+      "[{}ms] [archive] preload_archive_pages start path=\"{}\" page_count={} max_dimension={}",
+      app_elapsed_ms(),
+      path,
+      page_count,
+      max_dimension
+    );
     // 開始時点の進捗（0%）を通知します。
     let _ = app.emit("archive-progress", ArchiveProgress { loaded: 0, total: page_count.max(1) });
 
@@ -361,12 +363,15 @@ pub mod commands {
       // 1ページ分のサムネイルができるたびに即時送信します。
       let page_thumb_callback = |index: usize, name: &str, data: &[u8], mime_type: &str| {
         println!("[{}ms] [archive] preload_archive_pages thumbnail index={} name=\"{}\"", app_elapsed_ms(), index, name);
-        let _ = app_thread.emit("archive-page-thumbnail", ArchivePageThumbnail {
-          index,
-          name: name.to_string(),
-          data: data.to_vec(),
-          mime_type: mime_type.to_string(),
-        });
+        let _ = app_thread.emit(
+          "archive-page-thumbnail",
+          ArchivePageThumbnail {
+            index,
+            name: name.to_string(),
+            data: data.to_vec(),
+            mime_type: mime_type.to_string(),
+          },
+        );
       };
 
       // 実際のキャッシュ生成処理を実行します。
@@ -376,7 +381,13 @@ pub mod commands {
         Err(err) => eprintln!("[{}ms] [archive] preload_archive_pages error: {}", app_elapsed_ms(), err),
       }
       // 成否に関わらず最終進捗を送って、UI 側で終了判定しやすくします。
-      let _ = app_thread.emit("archive-progress", ArchiveProgress { loaded: page_count, total: page_count.max(1) });
+      let _ = app_thread.emit(
+        "archive-progress",
+        ArchiveProgress {
+          loaded: page_count,
+          total: page_count.max(1),
+        },
+      );
     });
 
     println!("[{}ms] [archive] preload_archive_pages spawned thread", app_elapsed_ms());
@@ -387,34 +398,46 @@ pub mod commands {
   /// 指定範囲のページサムネイルをまとめて取得して返します。
   pub fn get_page_thumbnail_range(path: String, start_index: usize, count: usize, max_dimension: u32) -> Result<Vec<PagePayload>, AppError> {
     if path.is_empty() {
-      return Err(AppError::InvalidArchivePath)
+      return Err(AppError::InvalidArchivePath);
     }
 
     let archive_path = std::path::Path::new(&path);
     let pages = read_archive_page_thumbnails_range(archive_path, start_index, count, max_dimension)?;
     // 内部型をフロントエンド向けの `PagePayload` に変換して返します。
-    Ok(pages.into_iter().map(|page| PagePayload {
-      name: page.name,
-      data: page.data,
-      mime_type: page.mime_type,
-    }).collect())
+    Ok(
+      pages
+        .into_iter()
+        .map(|page| PagePayload {
+          name: page.name,
+          data: page.data,
+          mime_type: page.mime_type,
+        })
+        .collect(),
+    )
   }
 
   #[tauri::command]
   /// 指定範囲のページを事前読み込みしてページキャッシュを温めます。
-  pub async fn prefetch_page_range(path: String, start_index: usize, count: usize) -> Result<(), AppError> {
+  pub async fn prefetch_page_range(path: String, start_index: usize, count: usize, max_width: u32, max_height: u32) -> Result<(), AppError> {
     if path.is_empty() {
-      return Err(AppError::InvalidArchivePath)
+      return Err(AppError::InvalidArchivePath);
     }
 
     if count == 0 {
-      return Ok(())
+      return Ok(());
     }
 
     tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
       let archive_path = std::path::Path::new(&path);
-      let warmed = prefetch_archive_page_range(archive_path, start_index, count)?;
-      println!("[{}ms] [archive] prefetch_page_range path=\"{}\" start_index={} count={} warmed={}", app_elapsed_ms(), path, start_index, count, warmed);
+      let warmed = prefetch_archive_page_range_at_resolution(archive_path, start_index, count, max_width, max_height)?;
+      println!(
+        "[{}ms] [archive] prefetch_page_range path=\"{}\" start_index={} count={} warmed={}",
+        app_elapsed_ms(),
+        path,
+        start_index,
+        count,
+        warmed
+      );
       Ok(())
     })
     .await
@@ -425,11 +448,18 @@ pub mod commands {
   /// サムネイル取得を非同期で実行し、結果をイベントで返します。
   pub fn request_page_thumbnail_range(path: String, start_index: usize, count: usize, max_dimension: u32, app: tauri::AppHandle) -> Result<(), AppError> {
     if path.is_empty() {
-      return Err(AppError::InvalidArchivePath)
+      return Err(AppError::InvalidArchivePath);
     }
 
     let started_at = std::time::Instant::now();
-    println!("[{}] [archive] request_page_thumbnail_range start path=\"{}\" start_index={} count={} max_dimension={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), path, start_index, count, max_dimension);
+    println!(
+      "[{}] [archive] request_page_thumbnail_range start path=\"{}\" start_index={} count={} max_dimension={}",
+      Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+      path,
+      start_index,
+      count,
+      max_dimension
+    );
 
     let app_thread = app.clone();
     let path_thread = path.clone();
@@ -440,20 +470,40 @@ pub mod commands {
       match result {
         Ok(thumbnails) => {
           let elapsed = started_at.elapsed();
-          println!("[{}] [archive] request_page_thumbnail_range completed path=\"{}\" start_index={} count={} elapsed={}ms actual_pages={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), path_thread, start_index, count, elapsed.as_millis(), thumbnails.len());
+          println!(
+            "[{}] [archive] request_page_thumbnail_range completed path=\"{}\" start_index={} count={} elapsed={}ms actual_pages={}",
+            Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+            path_thread,
+            start_index,
+            count,
+            elapsed.as_millis(),
+            thumbnails.len()
+          );
 
           // 取得した配列に連番インデックスを付与してイベント送信します。
-          let batch: Vec<ArchivePageThumbnail> = thumbnails.into_iter().enumerate().map(|(i, page)| ArchivePageThumbnail {
-            index: start_index + i,
-            name: page.name,
-            data: page.data,
-            mime_type: page.mime_type,
-          }).collect();
+          let batch: Vec<ArchivePageThumbnail> = thumbnails
+            .into_iter()
+            .enumerate()
+            .map(|(i, page)| ArchivePageThumbnail {
+              index: start_index + i,
+              name: page.name,
+              data: page.data,
+              mime_type: page.mime_type,
+            })
+            .collect();
           let _ = app_thread.emit("archive-page-thumbnail-batch", ArchivePageThumbnailBatch { thumbnails: batch });
         }
         Err(err) => {
           let elapsed = started_at.elapsed();
-          eprintln!("[{}] [archive] request_page_thumbnail_range error path=\"{}\" start_index={} count={} elapsed={}ms err={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), path_thread, start_index, count, elapsed.as_millis(), err);
+          eprintln!(
+            "[{}] [archive] request_page_thumbnail_range error path=\"{}\" start_index={} count={} elapsed={}ms err={}",
+            Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+            path_thread,
+            start_index,
+            count,
+            elapsed.as_millis(),
+            err
+          );
         }
       }
     });
@@ -465,7 +515,7 @@ pub mod commands {
   /// ZIP 内画像を一時ディレクトリへ抽出し、抽出結果を順次イベント通知します。
   pub fn start_zip_thumbnail_extraction(path: String, app: tauri::AppHandle) -> Result<(), AppError> {
     if path.is_empty() {
-      return Err(AppError::InvalidArchivePath)
+      return Err(AppError::InvalidArchivePath);
     }
 
     let app_thread = app.clone();
@@ -494,7 +544,7 @@ pub mod commands {
 fn extract_archive_thumbnails_to_memory(path: &str, app: &tauri::AppHandle) -> Result<(), AppError> {
   let archive_path = Path::new(path);
   if !archive_path.exists() {
-    return Err(AppError::InvalidArchivePath)
+    return Err(AppError::InvalidArchivePath);
   }
 
   let thumbnails = read_archive_thumbnails_to_memory(archive_path)?;
@@ -539,7 +589,13 @@ fn read_archive_thumbnails_to_memory(archive_path: &Path) -> Result<Vec<Extracte
 /// 画像として扱う拡張子かどうかを判定します。
 fn is_supported_image(name: &str) -> bool {
   let lowercase = name.to_lowercase();
-  lowercase.ends_with(".png") || lowercase.ends_with(".jpg") || lowercase.ends_with(".jpeg") || lowercase.ends_with(".webp") || lowercase.ends_with(".gif") || lowercase.ends_with(".bmp") || lowercase.ends_with(".avif")
+  lowercase.ends_with(".png")
+    || lowercase.ends_with(".jpg")
+    || lowercase.ends_with(".jpeg")
+    || lowercase.ends_with(".webp")
+    || lowercase.ends_with(".gif")
+    || lowercase.ends_with(".bmp")
+    || lowercase.ends_with(".avif")
 }
 
 /// ZIP エントリ名を、保存時に安全な文字列へ変換します。
@@ -548,8 +604,7 @@ fn is_supported_image(name: &str) -> bool {
 fn sanitize_entry_name(name: &str) -> String {
   let mut sanitized = String::new();
   for ch in name.chars() {
-    if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ' ')
-    {
+    if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ' ') {
       sanitized.push(ch);
     } else {
       sanitized.push('_');
@@ -570,7 +625,7 @@ mod tests {
     let archive_path = temp_dir.join("sample.cbz");
     let _ = std::fs::create_dir_all(&temp_dir);
 
-    let mut writer = zip::ZipWriter::new(fs::File::create(&archive_path).unwrap());
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
     let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
     let png = create_test_png();
 
@@ -607,6 +662,13 @@ pub fn run() {
 
   // アプリ本体を組み立てて実行します。
   tauri::Builder::default()
+    .setup(|app| {
+      let resource_library = app.path().resource_dir()?.join("binaries/pdfium/libpdfium.so");
+      let source_library = Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries/pdfium/libpdfium.so");
+      let library_path = if resource_library.is_file() { resource_library } else { source_library };
+      pdf::set_library_path(library_path)?;
+      Ok(())
+    })
     .plugin(tauri_plugin_dialog::init())
     .invoke_handler(tauri::generate_handler![
       commands::ping,

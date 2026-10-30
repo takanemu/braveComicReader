@@ -137,6 +137,19 @@ const getTimestamp = () => {
 
 const getPrefetchKey = (path: string, pageIndex: number) => `${path}::${pageIndex}`
 
+const getPageRenderSize = (
+  resolution: { width: number; height: number },
+  isSpread: boolean,
+) => {
+  const pixelRatio = window.devicePixelRatio || 1
+  const width = resolution.width || Math.ceil(window.innerWidth * pixelRatio)
+  const height = resolution.height || Math.ceil(window.innerHeight * pixelRatio)
+  return {
+    maxWidth: Math.max(1, Math.ceil(isSpread ? width / 2 : width)),
+    maxHeight: Math.max(1, height),
+  }
+}
+
 const getDirectionalDistance = (index: number, anchor: number, direction: 1 | -1, pageCount: number) => {
   const distance = (index - anchor) * direction
   return distance >= 0 ? distance : pageCount + distance
@@ -178,6 +191,7 @@ const App: FC = () => {
   const [pageNames, setPageNames] = useState<string[]>([])
   const [pageThumbnails, setPageThumbnails] = useState<string[]>([])
   const [pageLoaded, setPageLoaded] = useState<boolean[]>([])
+  const [renderResolution, setRenderResolution] = useState({ width: 0, height: 0 })
   const [cachedPages, setCachedPages] = useState<boolean[]>([])
   const [pageIndex, setPageIndex] = useState(0)
   const [pageCount, setPageCount] = useState(0)
@@ -216,7 +230,10 @@ const App: FC = () => {
   const [isLoading, setIsLoading] = useState(false)
   const archivePathRef = useRef<string | null>(null)
   const loadArchiveRef = useRef<((path: string) => Promise<void>) | null>(null)
+  const loadPageRef = useRef<((path: string, pageIndex: number) => Promise<void>) | null>(null)
   const pageIndexRef = useRef(0)
+  const viewerSectionRef = useRef<HTMLElement | null>(null)
+  const lastPdfResolutionRef = useRef<string | null>(null)
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [isHeaderHovered, setIsHeaderHovered] = useState(false)
   //const [progress, setProgress] = useState<ArchiveProgress | null>(null)
@@ -232,6 +249,36 @@ const App: FC = () => {
   const prefetchedPageKeysRef = useRef<Set<string>>(new Set())
   const inFlightPrefetchKeysRef = useRef<Set<string>>(new Set())
   const [extractedThumbnails, setExtractedThumbnails] = useState<ExtractedZipThumbnail[]>([])
+
+  useEffect(() => {
+    const element = viewerSectionRef.current
+    if (!element) {
+      return
+    }
+
+    const updateResolution = () => {
+      const bounds = element.getBoundingClientRect()
+      const pixelRatio = window.devicePixelRatio || 1
+      const nextResolution = {
+        width: Math.max(1, Math.ceil(bounds.width * pixelRatio)),
+        height: Math.max(1, Math.ceil(bounds.height * pixelRatio)),
+      }
+      setRenderResolution((current) => (
+        current.width === nextResolution.width && current.height === nextResolution.height
+          ? current
+          : nextResolution
+      ))
+    }
+
+    const observer = new ResizeObserver(updateResolution)
+    observer.observe(element)
+    window.addEventListener('resize', updateResolution)
+    updateResolution()
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateResolution)
+    }
+  }, [])
 
   useEffect(() => {
     let isMounted = true
@@ -556,9 +603,9 @@ const App: FC = () => {
           {
             name: 'Archive',
             extensions: [
-              'zip', 'cbz', '7z', 'cb7', 'rar', 'cbr', 'tar', 'tar.gz', 'tgz', 'gz',
+              'pdf', 'zip', 'cbz', '7z', 'cb7', 'rar', 'cbr', 'tar', 'tar.gz', 'tgz', 'gz',
               'tar.bz2', 'tbz', 'tbz2', 'bz2', 'tar.xz', 'txz', 'xz', 'tar.zst', 'tar.zstd', 'zst',
-              'ZIP', 'CBZ', '7Z', 'CB7', 'RAR', 'CBR', 'TAR', 'TAR.GZ', 'TGZ', 'GZ',
+              'PDF', 'ZIP', 'CBZ', '7Z', 'CB7', 'RAR', 'CBR', 'TAR', 'TAR.GZ', 'TGZ', 'GZ',
               'TAR.BZ2', 'TBZ', 'TBZ2', 'BZ2', 'TAR.XZ', 'TXZ', 'XZ', 'TAR.ZST', 'TAR.ZSTD', 'ZST',
             ],
           }
@@ -586,7 +633,12 @@ const App: FC = () => {
     }
 
     try {
-      const payload = await invoke<PagePayload>('get_page', { path, pageIndex: index })
+      const payload = await invoke<PagePayload>('get_page', {
+        path,
+        pageIndex: index,
+        maxWidth: THUMBNAIL_MAX_DIMENSION,
+        maxHeight: THUMBNAIL_MAX_DIMENSION,
+      })
       if (archivePathRef.current === path) {
         markPagesCached([index])
       }
@@ -720,12 +772,13 @@ const App: FC = () => {
 
         const count = Math.min(batchSize, totalPages - startIndex)
         const indices = Array.from({ length: count }, (_, offset) => startIndex + offset)
+        const renderSize = getPageRenderSize(renderResolution, spreadModeRef.current)
         indices.forEach((index) => inFlightPrefetchKeysRef.current.add(getPrefetchKey(path, index)))
         const batchStarted = performance.now()
         console.info('[cache] full archive batch started', { startIndex, count })
 
         try {
-          await invoke('prefetch_page_range', { path, startIndex, count })
+          await invoke('prefetch_page_range', { path, startIndex, count, ...renderSize })
           if (archivePathRef.current === path) {
             markPagesCached(indices)
             indices.forEach((index) => prefetchedPageKeysRef.current.add(getPrefetchKey(path, index)))
@@ -738,7 +791,7 @@ const App: FC = () => {
         }
       }
     })()
-  }, [markPagesCached])
+  }, [markPagesCached, renderResolution.height, renderResolution.width])
 
   const prefetchAroundPage = useCallback((path: string, centerIndex: number) => {
     const totalPages = pageCountRef.current
@@ -747,6 +800,10 @@ const App: FC = () => {
     }
 
     const direction = thumbnailPriorityDirectionRef.current
+    const renderSize = getPageRenderSize(
+      renderResolution,
+      spreadModeRef.current || spreadPage !== null,
+    )
     const targetIndices = (direction === 1
       ? [centerIndex + 1, centerIndex + 2, centerIndex - 1]
       : [centerIndex - 1, centerIndex - 2, centerIndex + 1]
@@ -797,6 +854,7 @@ const App: FC = () => {
         path,
         startIndex: range.startIndex,
         count: range.count,
+        ...renderSize,
       })
         .then(() => {
           if (archivePathRef.current === path) {
@@ -823,7 +881,7 @@ const App: FC = () => {
           }
         })
     }
-  }, [markPagesCached, startFullArchivePrefetch])
+  }, [markPagesCached, renderResolution.height, renderResolution.width, spreadPage, startFullArchivePrefetch])
 
   useEffect(() => {
     if (cacheMode !== 'fullArchive' || !archivePath || !isArchiveReady || !imageUrl || pageLoadCount > 0 || isScrolling) {
@@ -1027,11 +1085,19 @@ const App: FC = () => {
     try {
       console.time("1. invoke get_page");
       const partnerIndex = spreadModeRef.current ? getSpreadPartnerIndex(nextIndex, pageCount) : null
+      const renderSize = getPageRenderSize(
+        renderResolution,
+        spreadModeRef.current || spreadPage !== null,
+      )
+      const resolutionKey = `${path}:${renderSize.maxWidth}x${renderSize.maxHeight}`
+      if (path.toLowerCase().endsWith('.pdf')) {
+        lastPdfResolutionRef.current = resolutionKey
+      }
       const [payload, partnerPayload] = await Promise.all([
-        invoke<PagePayload>('get_page', { path, pageIndex: nextIndex }),
+        invoke<PagePayload>('get_page', { path, pageIndex: nextIndex, ...renderSize }),
         partnerIndex === null
           ? Promise.resolve(null)
-          : invoke<PagePayload>('get_page', { path, pageIndex: partnerIndex }).catch(() => null),
+          : invoke<PagePayload>('get_page', { path, pageIndex: partnerIndex, ...renderSize }).catch(() => null),
       ])
       console.timeEnd("1. invoke get_page");
       if (archivePathRef.current === path) {
@@ -1109,6 +1175,36 @@ const App: FC = () => {
     }
   }
 
+  loadPageRef.current = loadPage
+
+  useEffect(() => {
+    if (
+      !isArchiveReady
+      || !archivePath?.toLowerCase().endsWith('.pdf')
+      || renderResolution.width === 0
+      || renderResolution.height === 0
+    ) {
+      return
+    }
+
+    const renderSize = getPageRenderSize(
+      renderResolution,
+      spreadModeRef.current || spreadPage !== null,
+    )
+    const resolutionKey = `${archivePath}:${renderSize.maxWidth}x${renderSize.maxHeight}`
+    if (lastPdfResolutionRef.current === resolutionKey) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      const reloadPage = loadPageRef.current
+      if (reloadPage && archivePathRef.current === archivePath) {
+        void reloadPage(archivePath, pageIndexRef.current)
+      }
+    }, 200)
+    return () => window.clearTimeout(timer)
+  }, [archivePath, isArchiveReady, renderResolution.height, renderResolution.width, spreadPage])
+
   const discardQueuedThumbnailRequests = useCallback(() => {
     for (const index of thumbnailQueueRef.current) {
       if (!inFlightThumbnailKeysRef.current.has(index)) {
@@ -1140,7 +1236,12 @@ const App: FC = () => {
     }
 
     try {
-      const payload = await invoke<PagePayload>('get_page', { path, pageIndex: partnerIndex })
+      const renderSize = getPageRenderSize(renderResolution, true)
+      const payload = await invoke<PagePayload>('get_page', {
+        path,
+        pageIndex: partnerIndex,
+        ...renderSize,
+      })
       if (archivePathRef.current !== path || pageIndexRef.current !== baseIndex) {
         return
       }
@@ -1534,7 +1635,7 @@ const App: FC = () => {
             </div>
           </aside>
 
-          <section className="flex h-[calc(100vh-16px)] min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-2xl shadow-black/20">
+          <section ref={viewerSectionRef} className="flex h-[calc(100vh-16px)] min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-2xl shadow-black/20">
             <ComicViewerCarousel
               pageCount={pageCount}
               pageIndex={pageIndex}

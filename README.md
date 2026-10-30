@@ -7,6 +7,8 @@ Linux 向けのデスクトップコミックリーダーです。アーカイ�
 ## 主な機能
 
 - アーカイブ内の画像を閲覧
+- PDFのページを閲覧
+- 画面サイズとディスプレイ倍率に合わせたPDFページ描画（最大約3,300万画素）
 - ページ一覧とサムネイルからのページ移動
 - 1ページ表示と見開き表示
 - ページ遷移アニメーションの設定
@@ -23,7 +25,7 @@ Linux 向けのデスクトップコミックリーダーです。アーカイ�
 
 ## 対応形式
 
-ファイル選択画面では、次のアーカイブ拡張子を選択できます。
+ファイル選択画面では、PDFと次のアーカイブ拡張子を選択できます。
 
 - ZIP / CBZ
 - 7Z / CB7
@@ -75,7 +77,7 @@ npm run tauri:build
 npm run tauri:release
 ```
 
-どちらのビルドコマンドも、必要な `archivefs` バイナリをダウンロードしてからビルドします。現在、このダウンロードスクリプトが対応しているのは `x86_64-unknown-linux-gnu` です。
+各 Tauri ビルドコマンドは、`archivefs` と PDFium 151.0.7881.0 のLinux x86_64バイナリを、SHA-256を検証して取得してからビルドします。PDFiumライブラリとライセンス文書はアプリに同梱されます。現在、これらのダウンロードスクリプトが対応しているのは `x86_64-unknown-linux-gnu` です。
 
 ## アーカイブを指定して起動
 
@@ -94,3 +96,5 @@ npm run tauri:release
 ## ライセンス
 
 [MIT License](LICENSE)
+
+PDFの描画には[PDFium](https://pdfium.googlesource.com/pdfium/)を使用し、描画ページは可逆WebPで表示します。PDFiumおよび配布バイナリに含まれるサードパーティライブラリのライセンス文書は、アプリのリソースに同梱しています。バイナリ配布版は [`bblanchon/pdfium-binaries`](https://github.com/bblanchon/pdfium-binaries) から取得します。

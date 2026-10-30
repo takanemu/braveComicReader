@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "download:archivefs": "sh scripts/download-archivefs.sh",
-    "tauri:dev": "npm run download:archivefs && tauri dev",
-    "tauri:build": "npm run download:archivefs && tauri build",
-    "tauri:release": "npm run download:archivefs && tauri build --no-bundle",
+    "download:pdfium": "sh scripts/download-pdfium.sh",
+    "tauri:dev": "npm run download:archivefs && npm run download:pdfium && tauri dev",
+    "tauri:build": "npm run download:archivefs && npm run download:pdfium && tauri build",
+    "tauri:release": "npm run download:archivefs && npm run download:pdfium && tauri build --no-bundle",
     "lint": "eslint . --ext .ts,.tsx"
   },
   "dependencies": {

@@ -13,7 +13,8 @@
   "bundle": {
     "active": true,
     "targets": ["deb"],
-    "externalBin": ["binaries/archivefs-bench"]
+    "externalBin": ["binaries/archivefs-bench"],
+    "resources": ["binaries/pdfium/*", "binaries/pdfium/licenses/*"]
   },
   "app": {
     "security": {

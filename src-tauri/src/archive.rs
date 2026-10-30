@@ -4,11 +4,11 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
+use chrono::Local;
 use image::{DynamicImage, ImageFormat};
+use lazy_archive::open_archive as open_archive_vfs;
 use rayon::prelude::*;
 use thiserror::Error;
-use chrono::Local;
-use lazy_archive::open_archive as open_archive_vfs;
 use vfs_archive::ArchiveVfs;
 
 /// WebP再エンコード時の画質（0.0-100.0）。lossless比で大幅に高速化しつつ視認上の劣化を抑える値。
@@ -35,6 +35,8 @@ pub enum ArchiveError {
   Archive(String),
   #[error("Image decode error: {0}")]
   Image(String),
+  #[error("PDF error: {0}")]
+  Pdfium(String),
 }
 
 #[derive(Clone)]
@@ -70,7 +72,6 @@ struct CachedArchive {
   archive: Arc<dyn ArchiveVfs>,
 }
 
-
 impl CachedArchive {
   /// キャッシュ対象の全ページを読み込み、必要なら進捗や生成結果を通知します。
   ///
@@ -84,8 +85,13 @@ impl CachedArchive {
   ) -> Result<(), ArchiveError> {
     // すべてのページがロード済みかどうかではなく、未ロードのページだけを処理します。
     if self.pages.iter().all(Option::is_some) {
-      println!("[{}] [archive] cache_complete pages={} total={} reason=already_loaded", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), self.pages.iter().filter(|page| page.is_some()).count(), self.entries.len());
-      return Ok(())
+      println!(
+        "[{}] [archive] cache_complete pages={} total={} reason=already_loaded",
+        Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+        self.pages.iter().filter(|page| page.is_some()).count(),
+        self.entries.len()
+      );
+      return Ok(());
     }
 
     let total = self.entries.len();
@@ -118,13 +124,20 @@ impl CachedArchive {
 
       println!(
         "[{}] [archive] perf cache_page index={} name={} bytes={} decode={} encode={} total={}",
-        Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), index, entry.name, buf.len(),
-        format_duration(decode_elapsed), format_duration(encode_elapsed), format_duration(decode_elapsed + encode_elapsed)
+        Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+        index,
+        entry.name,
+        buf.len(),
+        format_duration(decode_elapsed),
+        format_duration(encode_elapsed),
+        format_duration(decode_elapsed + encode_elapsed)
       );
 
       // ページ本体は WebP(lossy) でキャッシュし、サムネイル要求も同一データを共有します。
       let page_payload = cache_page(&self.path, index, Arc::new(page_payload));
-      self.pages[index] = Some(CachedPage { encoded_page: Arc::clone(&page_payload) });
+      self.pages[index] = Some(CachedPage {
+        encoded_page: Arc::clone(&page_payload),
+      });
 
       // サムネイル生成完了イベントを通知します。
       if let Some(page_thumbnail_loaded) = page_thumbnail_loaded {
@@ -141,16 +154,28 @@ impl CachedArchive {
         report(index + 1, total);
       }
 
-      println!("[{}] [archive] cache_page_complete index={} name={} mime_type={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), index, page_payload.name, page_payload.mime_type);
+      println!(
+        "[{}] [archive] cache_page_complete index={} name={} mime_type={}",
+        Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+        index,
+        page_payload.name,
+        page_payload.mime_type
+      );
     }
 
-    println!("[{}] [archive] cache_complete pages={} total={} reason=all_pages_loaded", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), self.pages.iter().filter(|page| page.is_some()).count(), total);
+    println!(
+      "[{}] [archive] cache_complete pages={} total={} reason=all_pages_loaded",
+      Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+      self.pages.iter().filter(|page| page.is_some()).count(),
+      total
+    );
     Ok(())
   }
 }
 
 static ARCHIVE_CACHE: Mutex<Option<CachedArchive>> = Mutex::new(None);
 static PAGE_CACHE: RwLock<Option<(PathBuf, Vec<Option<Arc<ArchivePage>>>)>> = RwLock::new(None);
+static PDF_PAGE_CACHE: RwLock<Option<(PathBuf, Vec<Option<(u32, u32, Arc<ArchivePage>)>>)>> = RwLock::new(None);
 static PREFETCH_POOL: LazyLock<Result<rayon::ThreadPool, String>> = LazyLock::new(|| {
   rayon::ThreadPoolBuilder::new()
     .num_threads(1)
@@ -172,6 +197,7 @@ fn reset_archive_cache() {
   let mut cache = ARCHIVE_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
   *cache = None;
   *PAGE_CACHE.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+  *PDF_PAGE_CACHE.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 fn get_cached_page(path: &Path, page_index: usize) -> Option<Arc<ArchivePage>> {
@@ -198,6 +224,36 @@ fn cache_page(path: &Path, page_index: usize, page: Arc<ArchivePage>) -> Arc<Arc
   page
 }
 
+fn get_cached_pdf_page(path: &Path, page_index: usize, max_width: u32, max_height: u32) -> Option<Arc<ArchivePage>> {
+  let cache = PDF_PAGE_CACHE.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+  let (cached_path, pages) = cache.as_ref()?;
+  if cached_path != path {
+    return None;
+  }
+
+  let (cached_width, cached_height, page) = pages.get(page_index)?.as_ref()?;
+  (*cached_width >= max_width && *cached_height >= max_height).then(|| Arc::clone(page))
+}
+
+fn cache_pdf_page(path: &Path, page_index: usize, max_width: u32, max_height: u32, page: Arc<ArchivePage>) -> Arc<ArchivePage> {
+  let mut cache = PDF_PAGE_CACHE.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+  let Some((cached_path, pages)) = cache.as_mut() else {
+    return page;
+  };
+  if cached_path != path || page_index >= pages.len() {
+    return page;
+  }
+
+  if let Some((cached_width, cached_height, cached_page)) = &pages[page_index] {
+    if *cached_width >= max_width && *cached_height >= max_height {
+      return Arc::clone(cached_page);
+    }
+  }
+
+  pages[page_index] = Some((max_width, max_height, Arc::clone(&page)));
+  page
+}
+
 /// 指定パスのアーカイブがキャッシュ済みか確認し、必要なら読み直します。
 fn ensure_cached_archive(path: &Path, progress: Option<&dyn Fn(usize, usize)>) -> Result<(), ArchiveError> {
   // 共有キャッシュに排他アクセスします。
@@ -215,7 +271,13 @@ fn ensure_cached_archive(path: &Path, progress: Option<&dyn Fn(usize, usize)>) -
     let pages = vec![None; entries.len()];
     let page_locks = (0..page_count).map(|_| Arc::new(Mutex::new(()))).collect();
     let cached_path = path.to_path_buf();
-    *cache = Some(CachedArchive { path: cached_path.clone(), entries, pages, page_locks, archive });
+    *cache = Some(CachedArchive {
+      path: cached_path.clone(),
+      entries,
+      pages,
+      page_locks,
+      archive,
+    });
     *PAGE_CACHE.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((cached_path, vec![None; page_count]));
   }
 
@@ -247,10 +309,24 @@ pub fn get_archive_info(path: &Path) -> Result<(usize, Vec<String>), ArchiveErro
 }
 
 /// アーカイブ情報を取得し、必要に応じて進捗コールバックを呼び出します。
-pub fn get_archive_info_with_progress(
-  path: &Path,
-  progress: Option<&dyn Fn(usize, usize)>,
-) -> Result<(usize, Vec<String>), ArchiveError> {
+pub fn get_archive_info_with_progress(path: &Path, progress: Option<&dyn Fn(usize, usize)>) -> Result<(usize, Vec<String>), ArchiveError> {
+  if is_pdf_path(path) {
+    let names = crate::pdf::get_page_names(path)?;
+    let page_count = names.len();
+    let mut cache = PAGE_CACHE.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !cache.as_ref().is_some_and(|(cached_path, pages)| cached_path == path && pages.len() == page_count) {
+      *cache = Some((path.to_path_buf(), vec![None; page_count]));
+    }
+    let mut pdf_cache = PDF_PAGE_CACHE.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !pdf_cache.as_ref().is_some_and(|(cached_path, pages)| cached_path == path && pages.len() == page_count) {
+      *pdf_cache = Some((path.to_path_buf(), vec![None; page_count]));
+    }
+    if let Some(report) = progress {
+      report(page_count, page_count);
+    }
+    return Ok((page_count, names));
+  }
+
   with_cached_archive(path, progress, |cached| {
     let names = cached.entries.iter().map(|entry| entry.name.clone()).collect();
     Ok((cached.entries.len(), names))
@@ -265,6 +341,28 @@ pub fn preload_archive_cache(
   page_loaded: Option<&dyn Fn(usize, &ArchivePage)>,
   thumbnail_dimension: u32,
 ) -> Result<(usize, Vec<String>), ArchiveError> {
+  if is_pdf_path(path) {
+    let (_, names) = get_archive_info(path)?;
+    let total = names.len();
+    if let Some(report) = progress {
+      report(0, total);
+    }
+    for (index, name) in names.iter().enumerate() {
+      let page = read_archive_page(path, index)?;
+      if let Some(page_thumbnail_loaded) = page_thumbnail_loaded {
+        page_thumbnail_loaded(index, name, &page.data, &page.mime_type);
+      }
+      if let Some(page_loaded) = page_loaded {
+        page_loaded(index, &page);
+      }
+      if let Some(report) = progress {
+        report(index + 1, total);
+      }
+    }
+    let _ = thumbnail_dimension;
+    return Ok((total, names));
+  }
+
   with_cached_archive(path, None, |cached| {
     cached.ensure_pages_loaded(progress, page_thumbnail_loaded, page_loaded, thumbnail_dimension)?;
     let names = cached.entries.iter().map(|entry| entry.name.clone()).collect();
@@ -274,11 +372,48 @@ pub fn preload_archive_cache(
 
 /// 指定インデックスのページ画像を1枚取得します。
 pub fn read_archive_page(path: &Path, page_index: usize) -> Result<ArchivePage, ArchiveError> {
+  read_archive_page_at_resolution(path, page_index, 3840, 2160)
+}
+
+pub fn read_archive_page_at_resolution(path: &Path, page_index: usize, max_width: u32, max_height: u32) -> Result<ArchivePage, ArchiveError> {
+  if is_pdf_path(path) {
+    let (max_width, max_height) = crate::pdf::normalize_render_size(max_width, max_height);
+    if !path.exists() {
+      return Err(ArchiveError::NotFound);
+    }
+
+    let page_count = {
+      let cache = PAGE_CACHE.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+      cache.as_ref().filter(|(cached_path, _)| cached_path == path).map(|(_, pages)| pages.len())
+    };
+    let page_count = match page_count {
+      Some(page_count) => page_count,
+      None => get_archive_info(path)?.0,
+    };
+    if page_index >= page_count {
+      return Err(ArchiveError::PageIndexOutOfRange);
+    }
+
+    if let Some(page) = get_cached_pdf_page(path, page_index, max_width, max_height) {
+      return Ok(page.as_ref().clone());
+    }
+
+    let name = format!("Page {}", page_index + 1);
+    let image = crate::pdf::render_page(path, page_index, max_width, max_height)?;
+    let page = Arc::new(encode_image_bytes_lossless(&image, &name)?);
+    return Ok(cache_pdf_page(path, page_index, max_width, max_height, page).as_ref().clone());
+  }
+
   let started = std::time::Instant::now();
 
   let result = (|| {
     if let Some(page) = get_cached_page(path, page_index) {
-      println!("[{}] [archive] read_archive_page cache_hit page_index={} name={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), page_index, page.name);
+      println!(
+        "[{}] [archive] read_archive_page cache_hit page_index={} name={}",
+        Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+        page_index,
+        page.name
+      );
       return Ok(page.as_ref().clone());
     }
 
@@ -296,11 +431,21 @@ pub fn read_archive_page(path: &Path, page_index: usize) -> Result<ArchivePage, 
     let _page_guard = page_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
     if let Some(page) = get_cached_page(path, page_index) {
-      println!("[{}] [archive] read_archive_page cache_hit page_index={} name={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), page_index, page.name);
+      println!(
+        "[{}] [archive] read_archive_page cache_hit page_index={} name={}",
+        Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+        page_index,
+        page.name
+      );
       return Ok(page.as_ref().clone());
     }
 
-    println!("[{}] [archive] read_archive_page cache_miss page_index={} name={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), page_index, entry.name);
+    println!(
+      "[{}] [archive] read_archive_page cache_miss page_index={} name={}",
+      Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+      page_index,
+      entry.name
+    );
     let read_started = std::time::Instant::now();
     let buf = read_archive_entry(archive.as_ref(), &entry)?;
     let read_elapsed = read_started.elapsed();
@@ -314,8 +459,13 @@ pub fn read_archive_page(path: &Path, page_index: usize) -> Result<ArchivePage, 
     let encode_elapsed = encode_started.elapsed();
     println!(
       "[{}] [archive] perf ensure_page_cached page_index={} name={} bytes={} read={} decode={} encode={} total={}",
-      Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), page_index, entry.name, buf.len(),
-      format_duration(read_elapsed), format_duration(decode_elapsed), format_duration(encode_elapsed),
+      Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+      page_index,
+      entry.name,
+      buf.len(),
+      format_duration(read_elapsed),
+      format_duration(decode_elapsed),
+      format_duration(encode_elapsed),
       format_duration(read_elapsed + decode_elapsed + encode_elapsed)
     );
 
@@ -326,7 +476,9 @@ pub fn read_archive_page(path: &Path, page_index: usize) -> Result<ArchivePage, 
           if let Some(page) = cached.pages[page_index].as_ref() {
             Arc::clone(&page.encoded_page)
           } else {
-            cached.pages[page_index] = Some(CachedPage { encoded_page: Arc::clone(&encoded_page) });
+            cached.pages[page_index] = Some(CachedPage {
+              encoded_page: Arc::clone(&encoded_page),
+            });
             Arc::clone(&encoded_page)
           }
         }
@@ -339,19 +491,46 @@ pub fn read_archive_page(path: &Path, page_index: usize) -> Result<ArchivePage, 
 
   let elapsed = started.elapsed();
   match &result {
-    Ok(_) => println!("[{}] [archive] read_archive_page completed page_index={} elapsed={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), page_index, format_duration(elapsed)),
-    Err(err) => eprintln!("[{}] [archive] read_archive_page failed page_index={} elapsed={} err={}", Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), page_index, format_duration(elapsed), err),
+    Ok(_) => println!(
+      "[{}] [archive] read_archive_page completed page_index={} elapsed={}",
+      Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+      page_index,
+      format_duration(elapsed)
+    ),
+    Err(err) => eprintln!(
+      "[{}] [archive] read_archive_page failed page_index={} elapsed={} err={}",
+      Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+      page_index,
+      format_duration(elapsed),
+      err
+    ),
   }
 
   result
 }
 
 /// 指定範囲のページを事前読み込みし、キャッシュを温めます。
-pub fn prefetch_archive_page_range(path: &Path, start_index: usize, count: usize) -> Result<usize, ArchiveError> {
+pub fn prefetch_archive_page_range_at_resolution(path: &Path, start_index: usize, count: usize, max_width: u32, max_height: u32) -> Result<usize, ArchiveError> {
+  if is_pdf_path(path) {
+    let (max_width, max_height) = crate::pdf::normalize_render_size(max_width, max_height);
+    let page_count = get_archive_info(path)?.0;
+    let end_index = usize::min(start_index.saturating_add(count), page_count);
+    let mut warmed = 0;
+    for index in start_index..end_index {
+      if get_cached_pdf_page(path, index, max_width, max_height).is_none() {
+        read_archive_page_at_resolution(path, index, max_width, max_height)?;
+        warmed += 1;
+      }
+    }
+    return Ok(warmed);
+  }
+
   let started = std::time::Instant::now();
   println!(
     "[{}] [archive] prefetch_page_range start start_index={} count={}",
-    Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), start_index, count
+    Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+    start_index,
+    count
   );
 
   let (archive, candidates) = with_cached_archive(path, None, |cached| {
@@ -382,7 +561,10 @@ pub fn prefetch_archive_page_range(path: &Path, start_index: usize, count: usize
   let pending_bytes: usize = pending.iter().map(|(_, _, data, _)| data.len()).sum();
   println!(
     "[{}] [archive] perf prefetch_page_range read pages={} bytes={} elapsed={}",
-    Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), pending.len(), pending_bytes, format_duration(read_elapsed)
+    Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+    pending.len(),
+    pending_bytes,
+    format_duration(read_elapsed)
   );
 
   let process_started = std::time::Instant::now();
@@ -407,7 +589,9 @@ pub fn prefetch_archive_page_range(path: &Path, start_index: usize, count: usize
   let process_elapsed = process_started.elapsed();
   println!(
     "[{}] [archive] perf prefetch_page_range process pages={} elapsed={}",
-    Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), encoded_pages.len(), format_duration(process_elapsed)
+    Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+    encoded_pages.len(),
+    format_duration(process_elapsed)
   );
 
   let store_started = std::time::Instant::now();
@@ -422,11 +606,17 @@ pub fn prefetch_archive_page_range(path: &Path, start_index: usize, count: usize
       }
     }
     Ok(warmed)
-  }).map(|warmed| {
+  })
+  .map(|warmed| {
     println!(
       "[{}] [archive] prefetch_page_range completed requested={} warmed={} read={} process={} store={} total={}",
-      Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), count, warmed, format_duration(read_elapsed),
-      format_duration(process_elapsed), format_duration(store_started.elapsed()), format_duration(started.elapsed())
+      Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+      count,
+      warmed,
+      format_duration(read_elapsed),
+      format_duration(process_elapsed),
+      format_duration(store_started.elapsed()),
+      format_duration(started.elapsed())
     );
     warmed
   })
@@ -460,6 +650,12 @@ pub fn read_archive_page_thumbnails(path: &Path, max_dimension: u32) -> Result<V
 /// 指定範囲のサムネイル画像を取得します。
 pub fn read_archive_page_thumbnails_range(path: &Path, start_index: usize, count: usize, max_dimension: u32) -> Result<Vec<ArchivePage>, ArchiveError> {
   let _ = max_dimension;
+  if is_pdf_path(path) {
+    let page_count = get_archive_info(path)?.0;
+    let end_index = usize::min(start_index.saturating_add(count), page_count);
+    return (start_index..end_index).map(|index| read_archive_page(path, index)).collect();
+  }
+
   ensure_cached_archive(path, None)?;
   let end_index = {
     let cache = ARCHIVE_CACHE.lock().unwrap();
@@ -474,6 +670,10 @@ pub fn read_archive_page_thumbnails_range(path: &Path, start_index: usize, count
     thumbnails.push(read_archive_page(path, index)?);
   }
   Ok(thumbnails)
+}
+
+fn is_pdf_path(path: &Path) -> bool {
+  path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
 }
 
 /// アーカイブから画像エントリ一覧を収集します。
@@ -504,6 +704,14 @@ fn collect_page_entries(archive: &dyn ArchiveVfs, progress: Option<&dyn Fn(usize
 /// 原寸が `MAX_CACHE_WIDTH`x`MAX_CACHE_HEIGHT`（4K）を超える場合は、アスペクト比を保ったまま
 /// 高速な整数縮小で縮小してからエンコードし、キャッシュサイズと転送量を抑えます。
 fn encode_image_bytes(image: &DynamicImage, name: &str) -> Result<ArchivePage, ArchiveError> {
+  encode_image_bytes_with_mode(image, name, false)
+}
+
+fn encode_image_bytes_lossless(image: &DynamicImage, name: &str) -> Result<ArchivePage, ArchiveError> {
+  encode_image_bytes_with_mode(image, name, true)
+}
+
+fn encode_image_bytes_with_mode(image: &DynamicImage, name: &str, lossless: bool) -> Result<ArchivePage, ArchiveError> {
   let resize_started = std::time::Instant::now();
   let resized;
   let target = if image.width() > MAX_CACHE_WIDTH || image.height() > MAX_CACHE_HEIGHT {
@@ -516,7 +724,11 @@ fn encode_image_bytes(image: &DynamicImage, name: &str) -> Result<ArchivePage, A
 
   let convert_started = std::time::Instant::now();
   let mut config = webp::WebPConfig::new().map_err(|_| ArchiveError::Archive("webp config init failed".into()))?;
-  config.quality = WEBP_QUALITY;
+  config.quality = if lossless { 100.0 } else { WEBP_QUALITY };
+  config.lossless = i32::from(lossless);
+  if lossless {
+    config.alpha_compression = 0;
+  }
   config.method = WEBP_METHOD;
   config.thread_level = 1; // マルチスレッド圧縮を有効化
 
@@ -537,8 +749,14 @@ fn encode_image_bytes(image: &DynamicImage, name: &str) -> Result<ArchivePage, A
 
   println!(
     "[{}] [archive] perf encode_image name={} source={}x{} target={}x{} resize={} convert_encode={}",
-    Local::now().format("%Y/%m/%d %H:%M:%S%.3f"), name, image.width(), image.height(), target.width(), target.height(),
-    format_duration(resize_elapsed), format_duration(convert_elapsed)
+    Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+    name,
+    image.width(),
+    image.height(),
+    target.width(),
+    target.height(),
+    format_duration(resize_elapsed),
+    format_duration(convert_elapsed)
   );
 
   Ok(ArchivePage {
@@ -564,17 +782,13 @@ fn decode_image(data: &[u8], name: &str) -> Result<DynamicImage, ArchiveError> {
   }
 
   if let Some(format) = image_format_from_name(name) {
-    return image::ImageReader::with_format(Cursor::new(data), format)
-      .decode()
-      .map_err(|err| ArchiveError::Image(err.to_string()));
+    return image::ImageReader::with_format(Cursor::new(data), format).decode().map_err(|err| ArchiveError::Image(err.to_string()));
   }
 
   let cursor = Cursor::new(data);
   let result = match image::ImageReader::new(cursor).with_guessed_format() {
     Ok(reader) => reader.decode(),
-    Err(_) => {
-      image::ImageReader::new(Cursor::new(data)).with_guessed_format()?.decode()
-    }
+    Err(_) => image::ImageReader::new(Cursor::new(data)).with_guessed_format()?.decode(),
   };
   result.map_err(|err| ArchiveError::Image(err.to_string()))
 }
@@ -589,15 +803,10 @@ fn is_jpeg(data: &[u8]) -> bool {
 /// フル解像度でデコードしてから`resize`するのではなく、`MAX_CACHE_WIDTH`/`MAX_CACHE_HEIGHT`
 /// に収まる最小の1/8刻みスケールを選んでデコード時に縮小するため、デコード自体のコストも下がります。
 fn decode_jpeg_scaled(data: &[u8]) -> Result<DynamicImage, ArchiveError> {
-  let mut decompressor = turbojpeg::Decompressor::new()
-    .map_err(|err| ArchiveError::Image(format!("turbojpeg init failed: {err}")))?;
-  let header = decompressor
-    .read_header(data)
-    .map_err(|err| ArchiveError::Image(format!("turbojpeg header read failed: {err}")))?;
+  let mut decompressor = turbojpeg::Decompressor::new().map_err(|err| ArchiveError::Image(format!("turbojpeg init failed: {err}")))?;
+  let header = decompressor.read_header(data).map_err(|err| ArchiveError::Image(format!("turbojpeg header read failed: {err}")))?;
 
-  let required_scale = (MAX_CACHE_WIDTH as f64 / header.width as f64)
-    .min(MAX_CACHE_HEIGHT as f64 / header.height as f64)
-    .min(1.0);
+  let required_scale = (MAX_CACHE_WIDTH as f64 / header.width as f64).min(MAX_CACHE_HEIGHT as f64 / header.height as f64).min(1.0);
 
   // 最大キャッシュ寸法を超えない範囲で、最も大きい係数を選びます。
   let ratio = |factor: &turbojpeg::ScalingFactor| factor.num() as f64 / factor.denom() as f64;
@@ -628,7 +837,6 @@ fn decode_jpeg_scaled(data: &[u8]) -> Result<DynamicImage, ArchiveError> {
     .map(DynamicImage::ImageRgba8)
     .ok_or_else(|| ArchiveError::Image("failed to build image buffer from decoded pixels".into()))
 }
-
 
 /// ファイル名拡張子から `ImageFormat` を推定します。
 fn image_format_from_name(name: &str) -> Option<ImageFormat> {
@@ -679,6 +887,16 @@ mod tests {
   use super::*;
   use std::fs;
   use std::io::Write;
+
+  #[test]
+  fn lossless_webp_encoding_preserves_all_pixels() {
+    let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(32, 24, |x, y| image::Rgb([(x * 7) as u8, (y * 9) as u8, ((x + y) * 5) as u8])));
+
+    let encoded = encode_image_bytes_lossless(&image, "Page 1").unwrap();
+    let decoded = webp::Decoder::new(&encoded.data).decode().unwrap().to_image();
+
+    assert_eq!(decoded.to_rgba8(), image.to_rgba8());
+  }
 
   #[test]
   /// ZIP（CBZ）からページ情報と画像が読み取れることを確認します。

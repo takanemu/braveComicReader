@@ -31,6 +31,7 @@ name = "brave_comic_reader"
   chrono = "0.4"
   webp = "0.3"
   turbojpeg = { version = "1", default-features = false, features = ["cmake", "require-simd"] }
+  pdfium-render = { version = "0.9.4", default-features = false, features = ["pdfium_7881", "image_025", "thread_safe"] }
 
 [dev-dependencies]
   zip = "2"
