@@ -9,6 +9,11 @@ npm run tauri:dev
 # リリースビルド
 npm run tauri:build
 
+このコマンドは、単体実行用バイナリーに加えて `.deb` パッケージを作成します。`.deb` は `src-tauri/target/release/bundle/deb/` に出力されます。単体実行用バイナリーは `src-tauri/target/release/` に出力されます。
+
+# 単体実行用バイナリーのみを作成
+npm run tauri:release
+
 # archivefsバイナリの取得
 npm run download:archivefs
 
