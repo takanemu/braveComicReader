@@ -22,6 +22,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes \
             build-essential \
+            cmake \
+            nasm \
             curl \
             file \
             libayatana-appindicator3-dev \
