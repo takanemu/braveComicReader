@@ -1,6 +1,7 @@
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type FC } from 'react'
 import ComicViewerCarousel from './components/ComicViewerCarousel'
@@ -182,6 +183,8 @@ const buildContinuousRanges = (indices: number[]): IndexRange[] => {
 
 const App: FC = () => {
   const [archivePath, setArchivePath] = useState<string | null>(null)
+  const [archiveError, setArchiveError] = useState('')
+  const [isArchiveDragOver, setIsArchiveDragOver] = useState(false)
   const [archiveId, setArchiveId] = useState<string | null>(null)
   const archiveIdRef = useRef<string | null>(null)
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
@@ -473,6 +476,7 @@ const App: FC = () => {
 
   const loadArchive = async (path: string) => {
     setIsLoading(true)
+    setArchiveError('')
     //setStatus(`Loading ${path}...`)
     //setProgress(null)
     setIsArchiveReady(false)
@@ -568,6 +572,9 @@ const App: FC = () => {
       }
     } catch (error) {
       console.error('Failed to load archive', { path, error })
+      setArchivePath(null)
+      archivePathRef.current = null
+      setArchiveError('Unable to open this file. Check that it is a supported PDF or archive.')
     } finally {
       setIsLoading(false)
     }
@@ -594,6 +601,52 @@ const App: FC = () => {
       })
     return () => {
       isMounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    let isMounted = true
+    let unlisten: (() => void) | null = null
+
+    void getCurrentWebview().onDragDropEvent(({ payload }) => {
+      if (payload.type === 'enter') {
+        setIsArchiveDragOver(true)
+        return
+      }
+      if (payload.type === 'leave') {
+        setIsArchiveDragOver(false)
+        return
+      }
+      if (payload.type !== 'drop') {
+        return
+      }
+
+      setIsArchiveDragOver(false)
+      if (payload.paths.length !== 1) {
+        setArchiveError('Drop one archive at a time.')
+        return
+      }
+
+      const loadArchive = loadArchiveRef.current
+      if (!loadArchive) {
+        console.error('Archive loader is not ready')
+        setArchiveError('Unable to open the dropped archive.')
+        return
+      }
+      void loadArchive(payload.paths[0])
+    }).then((stopListening) => {
+      if (isMounted) {
+        unlisten = stopListening
+      } else {
+        stopListening()
+      }
+    }).catch((error) => {
+      console.error('Failed to listen for archive drops', error)
+    })
+
+    return () => {
+      isMounted = false
+      unlisten?.()
     }
   }, [])
 
@@ -1544,6 +1597,17 @@ const App: FC = () => {
             </button>
           </div>
         ) : null}
+        {archiveError && archivePath ? (
+          <div
+            role="alert"
+            className="fixed right-4 top-20 z-50 flex max-w-sm items-center gap-3 rounded-lg border border-rose-800 bg-slate-950 px-4 py-3 text-sm text-rose-300 shadow-xl"
+          >
+            <span>{archiveError}</span>
+            <button type="button" onClick={() => setArchiveError('')} aria-label="Dismiss archive error" className="text-lg leading-none text-slate-400 hover:text-white">
+              &times;
+            </button>
+          </div>
+        ) : null}
 
         <div className="flex min-h-[calc(100vh-16px)] max-h-[calc(100vh-16px)] w-full gap-4">
           {isThumbnailPaneOpen ? (
@@ -1664,25 +1728,52 @@ const App: FC = () => {
             </button>
           )}
 
-          <section ref={viewerSectionRef} className="flex h-[calc(100vh-16px)] min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-2xl shadow-black/20">
-            <ComicViewerCarousel
-              pageCount={pageCount}
-              pageIndex={pageIndex}
-              pageStep={pageStep}
-              spreadMode={spreadMode}
-              pageTransition={pageTransition}
-              pageNames={pageNames}
-              imageUrl={imageUrl}
-              archivePath={archivePath}
-              spreadPage={spreadPage}
-              onSpread={(offset) => void openSpread(offset)}
-              onPageChange={(nextIndex) => {
-                if (!archivePath || nextIndex < 0 || nextIndex >= pageCount || nextIndex === pageIndex) {
-                  return
-                }
-                navigateToPage(archivePath, nextIndex)
-              }}
-            />
+          <section ref={viewerSectionRef} className={`relative flex h-[calc(100vh-16px)] min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border bg-slate-900/80 p-4 shadow-2xl shadow-black/20 ${isArchiveDragOver ? 'border-cyan-400' : 'border-slate-800'}`}>
+            {archivePath ? (
+              <ComicViewerCarousel
+                pageCount={pageCount}
+                pageIndex={pageIndex}
+                pageStep={pageStep}
+                spreadMode={spreadMode}
+                pageTransition={pageTransition}
+                pageNames={pageNames}
+                imageUrl={imageUrl}
+                archivePath={archivePath}
+                spreadPage={spreadPage}
+                onSpread={(offset) => void openSpread(offset)}
+                onPageChange={(nextIndex) => {
+                  if (!archivePath || nextIndex < 0 || nextIndex >= pageCount || nextIndex === pageIndex) {
+                    return
+                  }
+                  navigateToPage(archivePath, nextIndex)
+                }}
+              />
+            ) : (
+              <div className={`flex h-full min-h-0 flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 text-center transition-colors ${isArchiveDragOver ? 'border-cyan-400 bg-cyan-950/30' : 'border-slate-700 bg-slate-950/30'}`}>
+                <svg viewBox="0 0 24 24" className={`mb-5 h-14 w-14 ${isArchiveDragOver ? 'text-cyan-300' : 'text-slate-500'}`} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 16V4" />
+                  <path d="m7 9 5-5 5 5" />
+                  <path d="M20 16.5v2A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5v-2" />
+                </svg>
+                <h1 className="text-xl font-semibold text-slate-100">
+                  {isArchiveDragOver ? 'Drop to open archive' : 'Open a comic archive'}
+                </h1>
+                <p className="mt-2 max-w-md text-sm leading-6 text-slate-400">
+                  Drag and drop a PDF or archive file here, or choose <span className="text-slate-200">Open archive</span> from the menu.
+                </p>
+                <p className="mt-3 text-xs text-slate-500">PDF, ZIP / CBZ, 7Z / CB7, RAR / CBR, TAR and compressed TAR</p>
+                {archiveError ? (
+                  <p role="alert" className="mt-5 rounded-lg border border-rose-800 bg-rose-950/40 px-4 py-2 text-sm text-rose-300">
+                    {archiveError}
+                  </p>
+                ) : null}
+              </div>
+            )}
+            {isArchiveDragOver && archivePath ? (
+              <div className="pointer-events-none absolute inset-4 z-30 flex items-center justify-center rounded-xl border-2 border-dashed border-cyan-400 bg-slate-950/80 text-lg font-semibold text-cyan-200">
+                Drop to open archive
+              </div>
+            ) : null}
           </section>
         </div>
       </div>
