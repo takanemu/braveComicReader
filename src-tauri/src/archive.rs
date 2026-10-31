@@ -1,5 +1,4 @@
 use crate::format_duration;
-use std::fs::File;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
@@ -628,25 +627,6 @@ pub fn read_archive_page_thumbnail(path: &Path, page_index: usize, max_dimension
   read_archive_page(path, page_index)
 }
 
-/// 全ページ分のサムネイル画像を取得します。
-/*
-pub fn read_archive_page_thumbnails(path: &Path, max_dimension: u32) -> Result<Vec<ArchivePage>, ArchiveError> {
-  let _ = max_dimension;
-  with_cached_archive(path, None, |cached| {
-    let mut thumbnails = Vec::with_capacity(cached.entries.len());
-    for index in 0..cached.entries.len() {
-      if cached.pages.get(index).and_then(|page| page.as_ref()).is_none() {
-        ensure_page_cached(cached, index)?;
-      }
-
-      let page = cached.pages.get(index).and_then(|page| page.as_ref()).ok_or(ArchiveError::PageIndexOutOfRange)?;
-      thumbnails.push(page.encoded_page.as_ref().clone());
-    }
-    Ok(thumbnails)
-  })
-}
-*/
-
 /// 指定範囲のサムネイル画像を取得します。
 pub fn read_archive_page_thumbnails_range(path: &Path, start_index: usize, count: usize, max_dimension: u32) -> Result<Vec<ArchivePage>, ArchiveError> {
   let _ = max_dimension;
@@ -870,21 +850,10 @@ fn is_supported_image(name: &str) -> bool {
     || lowercase.ends_with(".avif")
 }
 
-pub fn read_image_file(path: &Path) -> Result<ArchivePage, ArchiveError> {
-  if !path.exists() {
-    return Err(ArchiveError::NotFound);
-  }
-  let mut file = File::open(path)?;
-  let mut buf = Vec::new();
-  file.read_to_end(&mut buf)?;
-  let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
-  let decoded = decode_image(&buf, name)?;
-  encode_image_bytes(&decoded, name)
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::fs::File;
   use std::fs;
   use std::io::Write;
 
@@ -1006,27 +975,6 @@ mod tests {
     assert_eq!(cached_read.unwrap().unwrap().name, "page-1.png");
 
     let _ = fs::remove_file(&archive_path);
-    let _ = fs::remove_dir(&temp_dir);
-  }
-
-  #[test]
-  /// 単体画像ファイルをページとして読み込めることを確認します。
-  fn reads_single_image_file() {
-    let _guard = archive_test_guard();
-    reset_archive_cache();
-    let temp_dir = std::env::temp_dir().join(format!("brave-comic-reader-image-test-{}", std::process::id()));
-    let image_path = temp_dir.join("single.png");
-    fs::create_dir_all(&temp_dir).unwrap();
-
-    let image_bytes = create_test_png();
-    fs::write(&image_path, &image_bytes).unwrap();
-
-    let page = read_image_file(&image_path).unwrap();
-    assert_eq!(page.name, "single.png");
-    assert!(page.data.starts_with(b"RIFF"));
-    assert_eq!(&page.data[8..12], b"WEBP");
-
-    let _ = fs::remove_file(&image_path);
     let _ = fs::remove_dir(&temp_dir);
   }
 
