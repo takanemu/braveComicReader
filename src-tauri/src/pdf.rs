@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 
 const MAX_PAGE_DIMENSION: u32 = 8192;
 const MAX_PAGE_PIXELS: u64 = 33_177_600;
+const EMBEDDED_PDFIUM: &[u8] = include_bytes!("../binaries/pdfium/libpdfium.so");
+const EMBEDDED_PDFIUM_VERSION: &str = include_str!("../binaries/pdfium/PDFIUM_VERSION");
 
 static PDFIUM_LIBRARY_PATH: OnceLock<PathBuf> = OnceLock::new();
 static PDFIUM_INSTANCE: OnceLock<Result<Pdfium, String>> = OnceLock::new();
@@ -16,6 +18,40 @@ pub fn set_library_path(path: PathBuf) -> Result<(), ArchiveError> {
   }
 
   PDFIUM_LIBRARY_PATH.set(path).map_err(|_| ArchiveError::Pdfium("PDFium library path was already initialized".into()))
+}
+
+pub fn extract_embedded_library(cache_dir: &Path) -> Result<PathBuf, ArchiveError> {
+  let version = EMBEDDED_PDFIUM_VERSION.trim();
+  let library_path = cache_dir.join("pdfium").join(version).join("libpdfium.so");
+  if library_path.is_file() && library_path.metadata().map(|metadata| metadata.len() == EMBEDDED_PDFIUM.len() as u64).unwrap_or(false) {
+    return Ok(library_path);
+  }
+
+  let directory = library_path
+    .parent()
+    .ok_or_else(|| ArchiveError::Pdfium("Could not determine the PDFium cache directory".into()))?;
+  std::fs::create_dir_all(directory).map_err(|error| ArchiveError::Pdfium(format!("Could not create PDFium cache directory: {error}")))?;
+
+  let temporary_path = directory.join(format!(
+    "libpdfium.so.{}.{}.tmp",
+    std::process::id(),
+    std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map(|duration| duration.as_nanos())
+      .unwrap_or_default()
+  ));
+  if let Err(error) = std::fs::write(&temporary_path, EMBEDDED_PDFIUM) {
+    let _ = std::fs::remove_file(&temporary_path);
+    return Err(ArchiveError::Pdfium(format!("Could not extract embedded PDFium: {error}")));
+  }
+  if let Err(error) = std::fs::rename(&temporary_path, &library_path) {
+    let _ = std::fs::remove_file(&temporary_path);
+    if !library_path.is_file() {
+      return Err(ArchiveError::Pdfium(format!("Could not install extracted PDFium: {error}")));
+    }
+  }
+
+  Ok(library_path)
 }
 
 fn load_pdfium() -> Result<&'static Pdfium, ArchiveError> {

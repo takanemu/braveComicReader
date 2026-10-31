@@ -673,7 +673,13 @@ pub fn run() {
     .setup(|app| {
       let resource_library = app.path().resource_dir()?.join("binaries/pdfium/libpdfium.so");
       let source_library = Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries/pdfium/libpdfium.so");
-      let library_path = if resource_library.is_file() { resource_library } else { source_library };
+      let library_path = if resource_library.is_file() {
+        resource_library
+      } else if source_library.is_file() {
+        source_library
+      } else {
+        pdf::extract_embedded_library(&app.path().app_cache_dir()?)?
+      };
       pdf::set_library_path(library_path)?;
       Ok(())
     })
