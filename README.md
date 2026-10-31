@@ -22,7 +22,7 @@ Linux 向けのデスクトップコミックリーダーです。アーカイ�
 - Linux デスクトップ（Ubuntu を主な対象としています）
 - x86_64 (`x86_64-unknown-linux-gnu`)
 - Rust 1.85 以降
-- Node.js と npm
+- Node.js 24 以降と npm
 
 ## 対応形式
 
