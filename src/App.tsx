@@ -186,6 +186,7 @@ const App: FC = () => {
   const archiveIdRef = useRef<string | null>(null)
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   const [isBookmarksOpen, setIsBookmarksOpen] = useState(false)
+  const [isThumbnailPaneOpen, setIsThumbnailPaneOpen] = useState(false)
   const [isTogglingBookmark, setIsTogglingBookmark] = useState(false)
   const [bookmarkError, setBookmarkError] = useState('')
   const [pageNames, setPageNames] = useState<string[]>([])
@@ -478,6 +479,7 @@ const App: FC = () => {
 
     try {
       setArchivePath(path)
+      setIsThumbnailPaneOpen(true)
       setArchiveId(null)
       archiveIdRef.current = null
       setBookmarks([])
@@ -1544,12 +1546,25 @@ const App: FC = () => {
         ) : null}
 
         <div className="flex min-h-[calc(100vh-16px)] max-h-[calc(100vh-16px)] w-full gap-4">
-          <aside className="flex w-[124px] shrink-0 flex-col rounded-2xl border border-slate-800 bg-slate-900/80 p-2.5 shadow-2xl shadow-black/20">
-            <div className="flex shrink-0 items-center justify-center px-1 pb-1 text-[10px] text-slate-400">
-              <span>{currentPageLabel}</span>
-            </div>
+          {isThumbnailPaneOpen ? (
+            <aside className="flex w-[124px] shrink-0 flex-col rounded-2xl border border-slate-800 bg-slate-900/80 p-2.5 shadow-2xl shadow-black/20">
+              <div className="flex shrink-0 items-center gap-1 px-1 pb-1 text-[10px] text-slate-400">
+                <span className="min-w-0 flex-1 truncate text-center">{currentPageLabel}</span>
+                <button
+                  type="button"
+                  onClick={() => setIsThumbnailPaneOpen(false)}
+                  aria-label="Hide thumbnails"
+                  title="Hide thumbnails"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                >
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="m14 18-6-6 6-6" />
+                    <path d="M20 4v16" />
+                  </svg>
+                </button>
+              </div>
 
-            <div className="flex min-h-0 w-full flex-1 gap-1.5">
+              <div className="flex min-h-0 w-full flex-1 gap-1.5">
               <div
                 role="img"
                 aria-label={`${cachedPageCount} of ${pageCount} pages cached`}
@@ -1632,8 +1647,22 @@ const App: FC = () => {
                   </div>
                 )}
               </div>
-            </div>
-          </aside>
+              </div>
+            </aside>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setIsThumbnailPaneOpen(true)}
+              aria-label="Show thumbnails"
+              title="Show thumbnails"
+              className="flex w-8 shrink-0 items-start justify-center rounded-2xl border border-slate-800 bg-slate-900/80 pt-3 text-slate-400 shadow-2xl shadow-black/20 hover:bg-slate-800 hover:text-slate-100"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m10 18 6-6-6-6" />
+                <path d="M4 4v16" />
+              </svg>
+            </button>
+          )}
 
           <section ref={viewerSectionRef} className="flex h-[calc(100vh-16px)] min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-2xl shadow-black/20">
             <ComicViewerCarousel
