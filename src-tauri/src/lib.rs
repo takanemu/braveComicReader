@@ -628,11 +628,12 @@ mod tests {
     let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
     let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
     let png = create_test_png();
+    let jpeg = create_test_jpeg();
 
     writer.start_file("page-1.png", options).unwrap();
     writer.write_all(&png).unwrap();
     writer.start_file("page-2.jpg", options).unwrap();
-    writer.write_all(&png).unwrap();
+    writer.write_all(&jpeg).unwrap();
     writer.finish().unwrap();
 
     let thumbnails = read_archive_thumbnails_to_memory(&archive_path).unwrap();
@@ -649,6 +650,13 @@ mod tests {
     let image = image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0]));
     let mut bytes = Vec::new();
     image.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+    bytes
+  }
+
+  fn create_test_jpeg() -> Vec<u8> {
+    let image = image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0]));
+    let mut bytes = Vec::new();
+    image.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Jpeg).unwrap();
     bytes
   }
 }
