@@ -43,6 +43,7 @@ const ComicViewerCarousel: FC<ComicViewerCarouselProps> = ({
   const [api, setApi] = useState<EmblaCarouselType | null>(null)
   const [navigationVisible, setNavigationVisible] = useState(false)
   const navigationIdleTimerRef = useRef<number | null>(null)
+  const navigationHoveredRef = useRef(false)
   const [displayedPage, setDisplayedPage] = useState<DisplayedPage>(() => ({
     pageIndex,
     imageUrl,
@@ -83,13 +84,29 @@ const ComicViewerCarousel: FC<ComicViewerCarouselProps> = ({
     if (navigationIdleTimerRef.current !== null) {
       window.clearTimeout(navigationIdleTimerRef.current)
     }
+    if (navigationHoveredRef.current) {
+      navigationIdleTimerRef.current = null
+      return
+    }
     navigationIdleTimerRef.current = window.setTimeout(() => {
       navigationIdleTimerRef.current = null
       setNavigationVisible(false)
     }, 3000)
   }
 
+  const buttonHoverHandlers = {
+    onMouseEnter: () => {
+      navigationHoveredRef.current = true
+      revealNavigation()
+    },
+    onMouseLeave: () => {
+      navigationHoveredRef.current = false
+      revealNavigation()
+    },
+  }
+
   const hideNavigation = () => {
+    navigationHoveredRef.current = false
     if (navigationIdleTimerRef.current !== null) {
       window.clearTimeout(navigationIdleTimerRef.current)
       navigationIdleTimerRef.current = null
@@ -252,6 +269,7 @@ const ComicViewerCarousel: FC<ComicViewerCarouselProps> = ({
         aria-label="Previous page"
         title="Previous page"
         tabIndex={navigationVisible ? 0 : -1}
+        {...buttonHoverHandlers}
         onClick={() => onPageChange(pageIndex - pageStep)}
         disabled={isPrevDisabled}
         className={`absolute left-5 top-1/2 z-20 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-slate-950/60 text-3xl leading-none text-white shadow-lg backdrop-blur-sm transition-opacity duration-500 ease-in-out hover:bg-slate-950/80 disabled:cursor-not-allowed disabled:opacity-40 ${navigationVisible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`}
@@ -263,6 +281,7 @@ const ComicViewerCarousel: FC<ComicViewerCarouselProps> = ({
         aria-label="Next page"
         title="Next page"
         tabIndex={navigationVisible ? 0 : -1}
+        {...buttonHoverHandlers}
         onClick={() => onPageChange(pageIndex + pageStep)}
         disabled={isNextDisabled}
         className={`absolute right-5 top-1/2 z-20 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-slate-950/60 text-3xl leading-none text-white shadow-lg backdrop-blur-sm transition-opacity duration-500 ease-in-out hover:bg-slate-950/80 disabled:cursor-not-allowed disabled:opacity-40 ${navigationVisible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`}
@@ -274,6 +293,7 @@ const ComicViewerCarousel: FC<ComicViewerCarouselProps> = ({
         aria-label="Spread with previous page"
         title="Spread with previous page"
         tabIndex={navigationVisible ? 0 : -1}
+        {...buttonHoverHandlers}
         onClick={() => onSpread(-1)}
         disabled={!hasPage || isPrevSpreadDisabled}
         className={`absolute left-5 top-5 z-20 inline-flex size-11 items-center justify-center rounded-full bg-slate-950/60 text-white shadow-lg backdrop-blur-sm transition-opacity duration-500 ease-in-out hover:bg-slate-950/80 disabled:cursor-not-allowed disabled:opacity-40 ${navigationVisible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`}
@@ -288,6 +308,7 @@ const ComicViewerCarousel: FC<ComicViewerCarouselProps> = ({
         aria-label="Spread with next page"
         title="Spread with next page"
         tabIndex={navigationVisible ? 0 : -1}
+        {...buttonHoverHandlers}
         onClick={() => onSpread(1)}
         disabled={!hasPage || isNextSpreadDisabled}
         className={`absolute right-5 top-5 z-20 inline-flex size-11 items-center justify-center rounded-full bg-slate-950/60 text-white shadow-lg backdrop-blur-sm transition-opacity duration-500 ease-in-out hover:bg-slate-950/80 disabled:cursor-not-allowed disabled:opacity-40 ${navigationVisible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}`}
