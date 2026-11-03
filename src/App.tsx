@@ -65,6 +65,7 @@ const THUMBNAIL_WIDTH = 88
 const THUMBNAIL_HEIGHT = 128
 const THUMBNAIL_MAX_DIMENSION = 128
 const SCROLL_IDLE_DELAY_MS = 150
+const HEADER_AUTO_HIDE_DELAY_MS = 700
 const MAX_THUMBNAIL_IN_FLIGHT = 1
 
 const getSpreadPartnerIndex = (pageIndex: number, pageCount: number): number | null => {
@@ -240,6 +241,7 @@ const App: FC = () => {
   const lastPdfResolutionRef = useRef<string | null>(null)
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [isHeaderHovered, setIsHeaderHovered] = useState(false)
+  const headerHideTimerRef = useRef<number | null>(null)
   //const [progress, setProgress] = useState<ArchiveProgress | null>(null)
   const [isArchiveReady, setIsArchiveReady] = useState(false)
   const [isScrolling, setIsScrolling] = useState(false)
@@ -253,6 +255,30 @@ const App: FC = () => {
   const prefetchedPageKeysRef = useRef<Set<string>>(new Set())
   const inFlightPrefetchKeysRef = useRef<Set<string>>(new Set())
   const [extractedThumbnails, setExtractedThumbnails] = useState<ExtractedZipThumbnail[]>([])
+
+  const showHeader = () => {
+    if (headerHideTimerRef.current !== null) {
+      window.clearTimeout(headerHideTimerRef.current)
+      headerHideTimerRef.current = null
+    }
+    setIsHeaderHovered(true)
+  }
+
+  const scheduleHeaderHide = () => {
+    if (headerHideTimerRef.current !== null) {
+      window.clearTimeout(headerHideTimerRef.current)
+    }
+    headerHideTimerRef.current = window.setTimeout(() => {
+      setIsHeaderHovered(false)
+      headerHideTimerRef.current = null
+    }, HEADER_AUTO_HIDE_DELAY_MS)
+  }
+
+  useEffect(() => () => {
+    if (headerHideTimerRef.current !== null) {
+      window.clearTimeout(headerHideTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     const element = viewerSectionRef.current
@@ -1373,6 +1399,7 @@ const App: FC = () => {
 
   const handleMenuSelect = async (id: (typeof MENU_ITEMS)[number]['id']) => {
     setIsMenuOpen(false)
+    scheduleHeaderHide()
 
     if (id === 'archive') {
       await handlePickArchive()
@@ -1512,11 +1539,12 @@ const App: FC = () => {
       <div className="w-full">
         <div
           className="fixed inset-x-0 top-0 z-40 h-3"
-          onMouseEnter={() => setIsHeaderHovered(true)}
+          onMouseEnter={showHeader}
+          onMouseLeave={scheduleHeaderHide}
         />
         <header
-          onMouseEnter={() => setIsHeaderHovered(true)}
-          onMouseLeave={() => setIsHeaderHovered(false)}
+          onMouseEnter={showHeader}
+          onMouseLeave={scheduleHeaderHide}
           className={`fixed inset-x-2 top-2 z-50 transition-transform duration-200 ease-out xl:inset-x-3 ${
             isHeaderHovered || isMenuOpen ? 'translate-y-0' : '-translate-y-[calc(100%+0.5rem)]'
           }`}
