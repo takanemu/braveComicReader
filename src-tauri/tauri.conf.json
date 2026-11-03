@@ -30,7 +30,8 @@
         "label": "main",
         "title": "Brave Comic Reader",
         "width": 1200,
-        "height": 840
+        "height": 840,
+        "decorations": false
       }
     ]
   }

@@ -2,9 +2,12 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type FC } from 'react'
 import ComicViewerCarousel from './components/ComicViewerCarousel'
+
+const currentWindow = getCurrentWindow()
 
 const MENU_ITEMS = [
   { id: 'archive', label: 'Open archive' },
@@ -241,6 +244,7 @@ const App: FC = () => {
   const lastPdfResolutionRef = useRef<string | null>(null)
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const [isHeaderHovered, setIsHeaderHovered] = useState(false)
+  const [isWindowMaximized, setIsWindowMaximized] = useState(false)
   const headerHideTimerRef = useRef<number | null>(null)
   //const [progress, setProgress] = useState<ArchiveProgress | null>(null)
   const [isArchiveReady, setIsArchiveReady] = useState(false)
@@ -277,6 +281,40 @@ const App: FC = () => {
   useEffect(() => () => {
     if (headerHideTimerRef.current !== null) {
       window.clearTimeout(headerHideTimerRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    let isMounted = true
+    let unlisten: (() => void) | undefined
+
+    const syncMaximizedState = async () => {
+      try {
+        const maximized = await currentWindow.isMaximized()
+        if (isMounted) {
+          setIsWindowMaximized(maximized)
+        }
+      } catch (error) {
+        console.error('[window] Failed to read maximized state', error)
+      }
+    }
+
+    void syncMaximizedState()
+    void currentWindow.onResized(() => {
+      void syncMaximizedState()
+    }).then((dispose) => {
+      if (isMounted) {
+        unlisten = dispose
+      } else {
+        dispose()
+      }
+    }).catch((error: unknown) => {
+      console.error('[window] Failed to listen for resize events', error)
+    })
+
+    return () => {
+      isMounted = false
+      unlisten?.()
     }
   }, [])
 
@@ -1534,6 +1572,36 @@ const App: FC = () => {
     }
   }
 
+  const handleWindowDrag = (event: React.MouseEvent<HTMLElement>) => {
+    if (
+      event.button !== 0 ||
+      (event.target instanceof Element && event.target.closest('button, a, input, select, textarea'))
+    ) {
+      return
+    }
+
+    void currentWindow.startDragging().catch((error: unknown) => {
+      console.error('[window] Failed to start dragging', error)
+    })
+  }
+
+  const handleToggleWindowMaximize = async () => {
+    try {
+      await currentWindow.toggleMaximize()
+      setIsWindowMaximized(await currentWindow.isMaximized())
+    } catch (error) {
+      console.error('[window] Failed to toggle maximize', error)
+    }
+  }
+
+  const handleCloseWindow = async () => {
+    try {
+      await currentWindow.close()
+    } catch (error) {
+      console.error('[window] Failed to close window', error)
+    }
+  }
+
   return (
     <main className="min-h-screen w-full bg-slate-950 px-2 py-2 text-slate-100 xl:px-3">
       <div className="w-full">
@@ -1545,6 +1613,7 @@ const App: FC = () => {
         <header
           onMouseEnter={showHeader}
           onMouseLeave={scheduleHeaderHide}
+          onMouseDown={handleWindowDrag}
           className={`fixed inset-x-2 top-2 z-50 transition-transform duration-200 ease-out xl:inset-x-3 ${
             isHeaderHovered || isMenuOpen ? 'translate-y-0' : '-translate-y-[calc(100%+0.5rem)]'
           }`}
@@ -1609,6 +1678,35 @@ const App: FC = () => {
               >
                 <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor" aria-hidden="true">
                   <path d="M6 3.75A1.75 1.75 0 0 1 7.75 2h8.5A1.75 1.75 0 0 1 18 3.75V22l-6-4-6 4V3.75Z" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleToggleWindowMaximize()}
+                aria-label={isWindowMaximized ? 'Restore window' : 'Maximize window'}
+                title={isWindowMaximized ? 'Restore' : 'Maximize'}
+                className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-800 hover:text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-500"
+              >
+                {isWindowMaximized ? (
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                    <path d="M8 8V5.75A1.75 1.75 0 0 1 9.75 4h8.5A1.75 1.75 0 0 1 20 5.75v8.5A1.75 1.75 0 0 1 18.25 16H16" />
+                    <path d="M5.75 8h8.5A1.75 1.75 0 0 1 16 9.75v8.5A1.75 1.75 0 0 1 14.25 20h-8.5A1.75 1.75 0 0 1 4 18.25v-8.5A1.75 1.75 0 0 1 5.75 8Z" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                    <rect x="5" y="5" width="14" height="14" rx="1.5" />
+                  </svg>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleCloseWindow()}
+                aria-label="Close window"
+                title="Close"
+                className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 transition hover:bg-rose-600 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-rose-400"
+              >
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                  <path d="m6 6 12 12M18 6 6 18" />
                 </svg>
               </button>
             </div>
