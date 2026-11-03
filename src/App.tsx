@@ -185,6 +185,11 @@ const buildContinuousRanges = (indices: number[]): IndexRange[] => {
   return ranges
 }
 
+const ARCHIVE_EXTENSIONS = [
+  'pdf', 'zip', 'cbz', '7z', 'cb7', 'rar', 'cbr', 'tar', 'gz', 'tgz',
+  'bz2', 'tbz', 'tbz2', 'xz', 'txz', 'zst', 'zstd',
+]
+
 const App: FC = () => {
   const [archivePath, setArchivePath] = useState<string | null>(null)
   const [archiveError, setArchiveError] = useState('')
@@ -720,14 +725,17 @@ const App: FC = () => {
         multiple: false,
         filters: [
           {
-            name: 'Archive',
-            extensions: [
-              'pdf', 'zip', 'cbz', '7z', 'cb7', 'rar', 'cbr', 'tar', 'tar.gz', 'tgz', 'gz',
-              'tar.bz2', 'tbz', 'tbz2', 'bz2', 'tar.xz', 'txz', 'xz', 'tar.zst', 'tar.zstd', 'zst',
-              'PDF', 'ZIP', 'CBZ', '7Z', 'CB7', 'RAR', 'CBR', 'TAR', 'TAR.GZ', 'TGZ', 'GZ',
-              'TAR.BZ2', 'TBZ', 'TBZ2', 'BZ2', 'TAR.XZ', 'TXZ', 'XZ', 'TAR.ZST', 'TAR.ZSTD', 'ZST',
-            ],
-          }
+            name: 'Comic (PDF / Archive)',
+            extensions: ARCHIVE_EXTENSIONS.flatMap((ext) => [ext, ext.toUpperCase()]),
+          },
+          {
+            name: 'PDF',
+            extensions: ['pdf', 'PDF'],
+          },
+          {
+            name: 'All files',
+            extensions: ['*'],
+          },
         ]
       })
       if (!selected) {
