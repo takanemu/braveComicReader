@@ -7,7 +7,7 @@ version = "0.1.0"
 
   # Tauri specific settings
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.100.0"
 
 [lib]
 name = "brave_comic_reader"

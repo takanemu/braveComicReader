@@ -16,7 +16,7 @@ Key requirements:
 - **Styling & UI:** Tailwind CSS + shadcn/ui
 - **Target OS:** Linux (Ubuntu / WebKitGTK environment)
 - **Preferred stable versions:**
-  - Rust stable 1.85 or newer (required by archivefs edition 2024)
+  - Rust stable 1.100.0 or newer (required by archivefs edition 2024)
   - Tauri v2.x (latest stable patch release)
   - React 18.x
   - TypeScript 5.4+ / 5.x stable
